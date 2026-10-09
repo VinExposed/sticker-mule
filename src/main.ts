@@ -58,12 +58,16 @@ async function main() {
 
   window.addEventListener('resize', () => play.layout());
 
-  const clock = new THREE.Clock();
-  let time = 0;
+  // Compile every shader up front (in parallel where the driver allows) so
+  // the first frames don't hitch.
+  await world.renderer.compileAsync(world.scene, world.camera);
+
+  let last = performance.now();
   const loop = () => {
-    const dt = Math.min(clock.getDelta(), 1 / 30);
-    time += dt;
-    play.update(dt, time);
+    const now = performance.now();
+    const dt = Math.min((now - last) / 1000, 1 / 30);
+    last = now;
+    play.update(dt);
     world.adapt(dt);
     ui.frame();
     world.render();

@@ -1,10 +1,6 @@
 import * as THREE from 'three';
 import type { Finish, StickerSource } from './factory';
 
-export const holoUniforms = {
-  uTime: { value: 0 },
-};
-
 function texture(c: HTMLCanvasElement, srgb: boolean, maxAniso: number) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -16,7 +12,6 @@ function texture(c: HTMLCanvasElement, srgb: boolean, maxAniso: number) {
 
 const HOLO_PARS = /* glsl */ `
 uniform sampler2D foilMap;
-uniform float uTime;
 float holoHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 vec3 holoSpectrum(float t) {
   return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.33, 0.67)));
@@ -54,7 +49,7 @@ if (foil > 0.002) {
   // Where the colour sits in the spectrum depends mostly on the angle you
   // look from, so moving the camera (or the sticker) sweeps the rainbow.
   float view = Rv.x * 3.4 - Rv.y * 2.6 + dot(N, V) * 1.4;
-  float phase = view + dot(tilt, vec2(0.9, 0.7)) + (uv.x - uv.y) * 0.9 + uTime * 0.01;
+  float phase = view + dot(tilt, vec2(0.9, 0.7)) + (uv.x - uv.y) * 0.9;
   vec3 spec = holoSpectrum(phase);
   spec = mix(spec, vec3(1.0), 0.18);
 
@@ -139,7 +134,6 @@ export function applyFinish(m: THREE.MeshPhysicalMaterial, finish: Finish, foilM
   if (finish === 'holo') {
     m.onBeforeCompile = (shader) => {
       shader.uniforms.foilMap = { value: foilMap };
-      shader.uniforms.uTime = holoUniforms.uTime;
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${HOLO_PARS}`)
         .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${HOLO_MAIN}`);

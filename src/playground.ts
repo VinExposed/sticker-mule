@@ -4,7 +4,6 @@ import { solvePeel, type Vec2 } from './peel/model';
 import { buildSheet, layoutPack, SHEET, type Slot } from './scene/sheet';
 import type { Surface, World } from './scene/world';
 import { covers, edgeInfo, extent, type StickerSource } from './stickers/factory';
-import { holoUniforms } from './stickers/materials';
 import { Sticker } from './stickers/sticker';
 
 /** Per-sticker animation state that only the controller cares about. */
@@ -55,6 +54,8 @@ export class Playground {
   private orbitDrag: { x: number; y: number; yaw: number; pitch: number } | null = null;
   private userOrbit = { yaw: 0, pitch: 0 };
   private intro = 0;
+  private poseA = new Float64Array(20);
+  private poseB = new Float64Array(20);
   private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
   private hovered: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null = null;
   private invite: Sticker | null = null;
@@ -146,6 +147,7 @@ export class Playground {
     const surface: Surface = { name, x: 0, z: 0, yaw: 0, w: SHEET.w, d: SHEET.d, top: SHEET.t };
     this.world.surfaces.push(surface);
     this.world.scene.add(built.mesh);
+    this.world.track(built.mesh);
     this.sheet = { mesh: built.mesh, surface, name, dispose: built.dispose };
     const sp = this.sheetPose;
     Object.assign(surface, sp);
@@ -181,6 +183,7 @@ export class Playground {
     const st = new Sticker(src, this.maxAniso);
     this.stickers.push(st);
     this.world.scene.add(st.root);
+    this.world.track(st.root);
     this.motion.set(st, blankMotion());
     return st;
   }
@@ -575,8 +578,7 @@ export class Playground {
 
   // ---------------------------------------------------------------- per frame
 
-  update(dt: number, time: number) {
-    holoUniforms.uTime.value = time;
+  update(dt: number) {
     this.inviteClock += dt;
 
     // Camera: user tilt plus a little parallax from the pointer (or the
@@ -587,7 +589,6 @@ export class Playground {
       px = this.gyro.x;
       py = this.gyro.y;
     }
-    const idle = Math.sin(time * 0.35) * 0.015;
     // Let go of a tilt and the desk swings back, like a lazy susan.
     if (!this.orbitDrag) {
       const k = 1 - Math.exp(-dt * 2.2);
@@ -603,16 +604,19 @@ export class Playground {
       introYaw = 0.5 * e;
       introPitch = -0.5 * e;
     }
-    this.world.orbit.tYaw = this.userOrbit.yaw - px * 0.05 + idle + introYaw;
+    this.world.orbit.tYaw = this.userOrbit.yaw - px * 0.05 + introYaw;
     this.world.orbit.tPitch = this.userOrbit.pitch - py * 0.035 + introPitch;
     if (this.intro < 1) {
       this.world.orbit.yaw = this.world.orbit.tYaw;
       this.world.orbit.pitch = this.world.orbit.tPitch;
+      this.world.kick(0);
     }
     this.world.tick(dt);
 
     for (const st of this.stickers) {
       const m = this.motion.get(st)!;
+      // Springs settle; once a sticker stops moving, stop rebuilding it.
+      const before = st.dirty ? null : st.pose(this.poseA);
       switch (st.mode) {
         case 'stuck':
           this.stepStuck(st, m, dt);
@@ -627,6 +631,7 @@ export class Playground {
           this.stepDrop(st, m, dt);
           break;
       }
+      if (before && st.dirty && samePose(before, st.pose(this.poseB))) st.dirty = false;
       if (st.update()) this.world.shadowsDirty = true;
     }
   }
@@ -644,15 +649,31 @@ export class Playground {
     const c = 2 * 0.5 * Math.sqrt(k);
     let goal = m.hoverGoal;
     let reach = 0.12;
-    if (st === this.invite) {
-      // Every few seconds, the corner flutters as if someone breathed on it.
-      const t = this.inviteClock % 3.2;
-      const flutter = t < 0.9 ? Math.sin(t * 15) * Math.exp(-t * 3.2) * 0.9 : 0;
-      goal = 1 + flutter;
+    if (st === this.invite && m.hover > 0.95) {
+      // Every few seconds the corner flutters as if someone breathed on it.
+      // Driven directly (not through the spring) so between flutters it is
+      // perfectly still and the idle scene costs nothing to draw.
+      const period = this.inviteClock < 30 ? 5 : 12;
+      const t = this.inviteClock % period;
+      const flutter = t < 1 ? Math.sin(t * 15) * Math.exp(-t * 5) * 0.9 : 0;
+      if (flutter === 0 && m.hover === 1) return;
+      m.hover = 1 + flutter;
+      m.hoverVel = 0;
+      reach = 0.4;
+    } else if (st === this.invite) {
       reach = 0.4;
     }
-    m.hoverVel += (k * (goal - m.hover) - c * m.hoverVel) * dt;
-    m.hover += m.hoverVel * dt;
+    // Settled: snap to rest so an idle scene draws nothing at all.
+    if (st === this.invite && m.hover > 0.95) {
+      // handled above
+    } else if (Math.abs(goal - m.hover) < 2e-3 && Math.abs(m.hoverVel) < 2e-2) {
+      if (m.hover === goal && m.hoverVel === 0) return;
+      m.hover = goal;
+      m.hoverVel = 0;
+    } else {
+      m.hoverVel += (k * (goal - m.hover) - c * m.hoverVel) * dt;
+      m.hover += m.hoverVel * dt;
+    }
     const a = Math.max(0, m.hover);
     const sol = solvePeel({
       grab: m.grab,
@@ -795,7 +816,7 @@ export class Playground {
         const speed = (m.dropFrom - st.baseY) / T1;
         this.sfx.slap(0.4 + speed / 40);
         // A tiny camera kick sells the impact.
-        this.world.orbit.pitch -= 0.004;
+        this.world.kick(-0.004);
         if ('vibrate' in navigator) navigator.vibrate?.(12);
       }
       const u = t - T1;
@@ -959,6 +980,11 @@ function farthest(st: Sticker, gx: number, gy: number) {
   let best = 0.5;
   for (let i = 0; i < p.length; i += 2) best = Math.max(best, Math.hypot(p[i] - gx, p[i + 1] - gy));
   return best;
+}
+
+function samePose(a: Float64Array, b: Float64Array) {
+  for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 1e-6) return false;
+  return true;
 }
 
 function easeInOut(t: number) {

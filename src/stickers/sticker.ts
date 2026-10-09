@@ -27,7 +27,9 @@ export class Sticker {
   readonly root = new THREE.Group();
   readonly front: THREE.Mesh;
   readonly back: THREE.Mesh;
+  /** Fine grid for curling/wrapping; a plain quad when lying flat. */
   readonly geometry: THREE.BufferGeometry;
+  private readonly quad: THREE.BufferGeometry;
   materials: StickerMaterials;
 
   /** Rest-pose vertex positions in sticker space (cm, y down). */
@@ -67,6 +69,8 @@ export class Sticker {
     this.rows = Math.max(12, Math.round((src.height / Math.max(src.width, src.height)) * long));
     const { geometry, rest } = grid(src.width, src.height, this.cols, this.rows);
     this.geometry = geometry;
+    this.quad = grid(src.width, src.height, 1, 1).geometry;
+    this.quad.computeBoundingSphere();
     this.rest = rest;
     this.materials = stickerMaterials(src, maxAniso);
     this.front = new THREE.Mesh(geometry, this.materials.front);
@@ -131,11 +135,22 @@ export class Sticker {
     }
     this.root.matrixWorldNeedsUpdate = true;
 
+    const sup = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
+    // Lying flat with nothing to wrap: two triangles will do, and the back
+    // face can't be seen.
+    const simple = !flying && flat && !sup;
+    const geo = simple ? this.quad : this.geometry;
+    if (this.front.geometry !== geo) {
+      this.front.geometry = geo;
+      this.back.geometry = geo;
+    }
+    this.back.visible = !simple;
+    if (simple) return true;
+
     const pos = this.geometry.attributes.position.array as Float32Array;
     const nor = this.geometry.attributes.normal.array as Float32Array;
     const rest = this.rest;
     const n = rest.length / 2;
-    const sup = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
     const c = Math.cos(this.yaw);
     const s = Math.sin(this.yaw);
     const gx = this.grab.x;
@@ -203,6 +218,32 @@ export class Sticker {
     return true;
   }
 
+  /** Everything that affects the mesh, packed for cheap "did it move?" checks. */
+  pose(out: Float64Array) {
+    const p = this.peel;
+    out[0] = p.dx;
+    out[1] = p.dy;
+    out[2] = p.f < -1e8 ? -1e8 : p.f;
+    out[3] = p.r;
+    out[4] = p.theta;
+    out[5] = this.x;
+    out[6] = this.z;
+    out[7] = this.yaw;
+    out[8] = this.baseY;
+    out[9] = this.pivot.x;
+    out[10] = this.pivot.y;
+    out[11] = this.pivot.z;
+    out[12] = this.tilt.x;
+    out[13] = this.tilt.y;
+    out[14] = this.tilt.z;
+    out[15] = this.tilt.w;
+    out[16] = this.bend;
+    out[17] = this.grab.x;
+    out[18] = this.grab.y;
+    out[19] = ['stuck', 'peeling', 'carried', 'dropping'].indexOf(this.mode);
+    return out;
+  }
+
   /** World position of a rest-pose point in the current shape. */
   worldPoint(px: number, py: number, out = new THREE.Vector3()) {
     const flat = Math.abs(this.peel.theta) <= 1e-4 || this.peel.f < -1e8;
@@ -212,6 +253,7 @@ export class Sticker {
 
   dispose() {
     this.geometry.dispose();
+    this.quad.dispose();
     this.materials.dispose();
   }
 }

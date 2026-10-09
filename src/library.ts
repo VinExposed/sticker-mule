@@ -43,6 +43,9 @@ export class Library {
       }
       this.art.set(design, a);
     }
+    // Give the main thread a breather between stickers so loading a pack
+    // never blocks input for long.
+    await new Promise((r) => setTimeout(r, 0));
     // User art: foil the light parts so holo looks intentional.
     const foil = a.foil ?? (finish === 'holo' && this.custom.has(design) ? lightAreas(a.canvas) : null);
     return buildSticker({

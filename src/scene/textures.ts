@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { canvas } from '../stickers/factory';
+import { canvas, grain } from '../stickers/factory';
 
 /** Small deterministic PRNG so textures look the same on every load. */
 export function rng(seed: number) {
@@ -30,15 +30,7 @@ export function deskTextures() {
   const g = color.getContext('2d')!;
   g.fillStyle = '#d8d2c7';
   g.fillRect(0, 0, size, size);
-  const img = g.getImageData(0, 0, size, size);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (r() - 0.5) * 9;
-    d[i] += n;
-    d[i + 1] += n;
-    d[i + 2] += n * 0.9;
-  }
-  g.putImageData(img, 0, 0);
+  grain(g, size, size, 0.07);
   // Mottling.
   for (let i = 0; i < 260; i++) {
     const x = r() * size;

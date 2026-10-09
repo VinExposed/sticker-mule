@@ -69,14 +69,7 @@ function dilate(src: HTMLCanvasElement, radius: number, color: string): HTMLCanv
     }
   }
   g.drawImage(src, 0, 0);
-  // Harden the alpha so the die line is crisp, then tint.
-  const img = g.getImageData(0, 0, out.width, out.height);
-  const d = img.data;
-  for (let i = 3; i < d.length; i += 4) {
-    const a = d[i];
-    d[i] = a < 40 ? 0 : a > 140 ? 255 : Math.round(((a - 40) / 100) * 255);
-  }
-  g.putImageData(img, 0, 0);
+  // The union of many anti-aliased copies already has a crisp edge; tint it.
   g.globalCompositeOperation = 'source-in';
   g.fillStyle = color;
   g.fillRect(0, 0, out.width, out.height);
@@ -89,9 +82,13 @@ function padded(src: CanvasImageSource, w: number, h: number, pad: number): HTML
   return c;
 }
 
-function bbox(c: HTMLCanvasElement) {
+/** Bounding box of the opaque pixels, found on a quarter-size copy. */
+function bbox(src: HTMLCanvasElement) {
+  const k = 4;
+  const c = canvas(Math.ceil(src.width / k), Math.ceil(src.height / k));
+  c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
   const { width: w, height: h } = c;
-  const d = c.getContext('2d')!.getImageData(0, 0, w, h).data;
+  const d = c.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
   let x0 = w;
   let y0 = h;
   let x1 = -1;
@@ -106,8 +103,13 @@ function bbox(c: HTMLCanvasElement) {
       }
     }
   }
-  if (x1 < 0) return { x: 0, y: 0, w, h };
-  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  if (x1 < 0) return { x: 0, y: 0, w: src.width, h: src.height };
+  // One low-res cell of slack on each side, clamped to the source.
+  const bx = Math.max(0, (x0 - 1) * k);
+  const by = Math.max(0, (y0 - 1) * k);
+  const bx1 = Math.min(src.width, (x1 + 2) * k);
+  const by1 = Math.min(src.height, (y1 + 2) * k);
+  return { x: bx, y: by, w: bx1 - bx, h: by1 - by };
 }
 
 function crop(src: HTMLCanvasElement, b: { x: number; y: number; w: number; h: number }, pad: number) {
@@ -116,17 +118,34 @@ function crop(src: HTMLCanvasElement, b: { x: number; y: number; w: number; h: n
   return c;
 }
 
-function noise(g: CanvasRenderingContext2D, w: number, h: number, amount: number) {
-  const img = g.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if (!d[i + 3]) continue;
-    const n = (Math.random() - 0.5) * amount;
-    d[i] += n;
-    d[i + 1] += n;
-    d[i + 2] += n;
+let grainTile: HTMLCanvasElement | null = null;
+
+/**
+ * Fine print grain without touching every pixel on the CPU: a small random
+ * tile, built once, repeated over the canvas. With `onlyInk` the grain only
+ * lands where something is already drawn.
+ */
+export function grain(g: CanvasRenderingContext2D, w: number, h: number, strength: number, onlyInk = false) {
+  if (!grainTile) {
+    const n = 128;
+    grainTile = canvas(n, n);
+    const tg = grainTile.getContext('2d')!;
+    const img = tg.createImageData(n, n);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.random();
+      const light = v > 0.5;
+      d[i] = d[i + 1] = d[i + 2] = light ? 255 : 0;
+      d[i + 3] = Math.round(Math.abs(v - 0.5) * 2 * 255);
+    }
+    tg.putImageData(img, 0, 0);
   }
-  g.putImageData(img, 0, 0);
+  g.save();
+  g.globalAlpha = strength;
+  g.globalCompositeOperation = onlyInk ? 'source-atop' : 'source-over';
+  g.fillStyle = g.createPattern(grainTile, 'repeat')!;
+  g.fillRect(0, 0, w, h);
+  g.restore();
 }
 
 export interface BuildOptions {
@@ -161,15 +180,15 @@ export function buildSticker(o: BuildOptions): StickerSource {
   const front = crop(full, b, 2);
 
   // Back: the adhesive side. Off-white, a touch of grain, same outline.
-  const back = canvas(front.width, front.height);
+  // Only seen mid-peel, so half resolution is plenty.
+  const back = canvas(front.width / 2, front.height / 2);
   {
     const bg = back.getContext('2d')!;
-    bg.drawImage(crop(cut, b, 2), 0, 0);
+    bg.drawImage(crop(cut, b, 2), 0, 0, back.width, back.height);
     bg.globalCompositeOperation = 'source-in';
     bg.fillStyle = '#e6e5e1';
     bg.fillRect(0, 0, back.width, back.height);
-    bg.globalCompositeOperation = 'source-over';
-    noise(bg, back.width, back.height, 10);
+    grain(bg, back.width, back.height, 0.06, true);
   }
 
   // Foil: holo stickers are printed on holographic vinyl, so the die-cut

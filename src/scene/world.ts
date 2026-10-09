@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { installPcss } from './pcss';
+import { installPcss, PcssMinMax } from './pcss';
 import { canvasTexture, clothTexture, deskTextures, pageEdgeTexture, stampTexture } from './textures';
 
 /** A flat area stickers can stick to. Rectangle in its own frame. */
@@ -16,6 +16,7 @@ export interface Surface {
 }
 
 const SHADOW_SPAN = 70;
+const SHADOW_MAP = 2048;
 const SHADOW_NEAR = 30;
 const SHADOW_FAR = 110;
 
@@ -29,6 +30,10 @@ export class World {
   readonly surfaces: Surface[] = [];
   readonly notebook = new THREE.Group();
   readonly notebookSurface: Surface;
+  private readonly minMax: PcssMinMax;
+  /** Renders nothing on screen: used to refresh the shadow map on its own. */
+  private readonly offscreen = new THREE.WebGLRenderTarget(1, 1);
+  private readonly nowhere = new THREE.PerspectiveCamera(1, 1, 0.1, 0.2);
 
   /** Where the camera looks and how far it sits. */
   private target = new THREE.Vector3();
@@ -39,7 +44,7 @@ export class World {
 
   constructor(container: HTMLElement) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = true;
     // Shadows are only re-rendered when something actually moved.
@@ -63,7 +68,7 @@ export class World {
     const key = new THREE.DirectionalLight('#fff4e6', 2.6);
     key.position.set(-26, 60, -22);
     key.castShadow = true;
-    key.shadow.mapSize.set(4096, 4096);
+    key.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
     const sc = key.shadow.camera;
     sc.left = sc.bottom = -SHADOW_SPAN / 2;
     sc.right = sc.top = SHADOW_SPAN / 2;
@@ -78,6 +83,7 @@ export class World {
     const hemi = new THREE.HemisphereLight('#f4f1ff', '#a89c8c', 0.35);
     this.scene.add(hemi);
 
+    this.minMax = new PcssMinMax(renderer, SHADOW_MAP);
     this.buildDesk();
     this.buildNotebook();
     this.notebookSurface = {
@@ -90,6 +96,7 @@ export class World {
       top: NOTEBOOK.t,
     };
     this.surfaces.push(this.notebookSurface);
+    this.track(this.scene);
   }
 
   private buildDesk() {
@@ -237,6 +244,7 @@ export class World {
 
   resize() {
     this.shadowsDirty = true;
+    this.needsRender = true;
     const el = this.renderer.domElement.parentElement!;
     const w = el.clientWidth;
     const h = el.clientHeight;
@@ -269,40 +277,93 @@ export class World {
 
   tick(dt: number) {
     const k = 1 - Math.exp(-dt * 6);
-    this.orbit.yaw += (this.orbit.tYaw - this.orbit.yaw) * k;
-    this.orbit.pitch += (this.orbit.tPitch - this.orbit.pitch) * k;
+    const dy = (this.orbit.tYaw - this.orbit.yaw) * k;
+    const dp = (this.orbit.tPitch - this.orbit.pitch) * k;
+    // Once the camera has settled there's nothing new to draw.
+    if (Math.abs(dy) + Math.abs(dp) < 2e-6 && !this.cameraMoved) return;
+    this.cameraMoved = false;
+    this.orbit.yaw += dy;
+    this.orbit.pitch += dp;
     this.updateCamera();
+    this.needsRender = true;
+  }
+
+  /** Something nudged the orbit directly (e.g. the slap kick). */
+  private cameraMoved = false;
+  kick(pitch: number) {
+    this.orbit.pitch += pitch;
+    this.cameraMoved = true;
   }
 
   /** Set when anything that casts a shadow moved this frame. */
   shadowsDirty = true;
+  /** Set when anything on screen changed. Idle frames draw nothing. */
+  needsRender = true;
   private slowFrames = 0;
   private fastFrames = 0;
-  private pixelRatio = Math.min(window.devicePixelRatio, 2);
+  private lastRendered = false;
+  private maxRatio = Math.min(window.devicePixelRatio, 1.5);
+  private pixelRatio = this.maxRatio;
 
-  /** Drop resolution on GPUs that can't keep up; creep back when they can. */
+  /**
+   * Drop resolution on GPUs that can't keep up; creep back when they can.
+   * Only frames that follow a drawn frame count, since idle frames are free.
+   */
   adapt(dt: number) {
-    if (dt > 1 / 45) this.slowFrames++;
+    const measured = this.lastRendered;
+    this.lastRendered = this.needsRender || this.shadowsDirty;
+    if (!measured) return;
+    if (dt > 1 / 50) this.slowFrames++;
     else this.slowFrames = Math.max(0, this.slowFrames - 1);
     if (dt < 1 / 58) this.fastFrames++;
     else this.fastFrames = 0;
-    const max = Math.min(window.devicePixelRatio, 2);
     let next = this.pixelRatio;
-    if (this.slowFrames > 40) next = Math.max(1, this.pixelRatio - 0.25);
-    else if (this.fastFrames > 300) next = Math.min(max, this.pixelRatio + 0.25);
+    if (this.slowFrames > 20) next = Math.max(0.75, this.pixelRatio - 0.25);
+    else if (this.fastFrames > 600) next = Math.min(this.maxRatio, this.pixelRatio + 0.25);
     if (next !== this.pixelRatio) {
       this.pixelRatio = next;
       this.renderer.setPixelRatio(next);
+      this.needsRender = true;
       this.slowFrames = 0;
       this.fastFrames = 0;
     }
   }
 
-  render() {
+  /**
+   * Refresh the shadow map, then its min/max summary, before the main pass
+   * reads them. Three only renders shadows inside render(), so this renders
+   * the scene into a 1x1 target from a camera pointed at nothing.
+   */
+  private updateShadows() {
+    const r = this.renderer;
+    r.shadowMap.needsUpdate = true;
+    const prev = r.getRenderTarget();
+    r.setRenderTarget(this.offscreen);
+    this.nowhere.position.set(0, -1000, 0);
+    this.nowhere.lookAt(0, -2000, 0);
+    r.render(this.scene, this.nowhere);
+    r.setRenderTarget(prev);
+    const depth = this.key.shadow.map?.depthTexture;
+    if (depth) this.minMax.update(depth);
+  }
+
+  /** Let a newly added object's materials use the shadow min/max texture. */
+  track(obj: THREE.Object3D) {
+    obj.traverse((o) => {
+      const mat = (o as THREE.Mesh).material;
+      if (mat) for (const m of Array.isArray(mat) ? mat : [mat]) this.minMax.patch(m);
+    });
+  }
+
+  /** Draw if anything changed (or always, when `force`, e.g. for a snapshot). */
+  render(force = false) {
     if (this.shadowsDirty) {
-      this.renderer.shadowMap.needsUpdate = true;
       this.shadowsDirty = false;
+      this.needsRender = true;
+      this.updateShadows();
     }
+    if (!this.needsRender && !force) return;
+    this.needsRender = false;
     this.renderer.render(this.scene, this.camera);
   }
 }

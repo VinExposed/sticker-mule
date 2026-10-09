@@ -136,6 +136,7 @@ export function mountUi(deps: UiDeps) {
   );
 
   const v = new THREE.Vector3();
+  let lastNote = '';
   return {
     firstPeel() {
       if (stage > 0) return;
@@ -152,18 +153,23 @@ export function mountUi(deps: UiDeps) {
       const p = deps.play.invitePoint(v);
       if (!p || note.classList.contains('gone')) return;
       p.project(deps.world.camera);
-      const r = deps.world.renderer.domElement.getBoundingClientRect();
-      const x = (p.x * 0.5 + 0.5) * r.width;
-      const y = (-p.y * 0.5 + 0.5) * r.height;
-      note.style.transform = `translate(${x}px, ${y}px)`;
-      note.classList.toggle('flip', x < 190);
-      note.classList.add('show');
+      // The canvas fills the window; avoid a layout read every frame.
+      const x = (p.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-p.y * 0.5 + 0.5) * window.innerHeight;
+      // Only touch the DOM when the note actually moves.
+      const t = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+      if (t !== lastNote) {
+        lastNote = t;
+        note.style.transform = t;
+        note.classList.toggle('flip', x < 190);
+        note.classList.add('show');
+      }
     },
   };
 }
 
 function saveImage(world: World, ui: HTMLElement) {
-  world.render();
+  world.render(true);
   world.renderer.domElement.toBlob((blob) => {
     if (!blob) return;
     const a = document.createElement('a');

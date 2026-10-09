@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { canvas, type StickerSource } from '../stickers/factory';
+import { canvas, grain, type StickerSource } from '../stickers/factory';
 import { rng } from './textures';
 
 export const SHEET = { w: 13.4, d: 18.6, t: 0.035 };
@@ -108,16 +108,7 @@ export function buildSheet(slots: Slot[], packNo: number) {
   }
 
   // A barely-there grain so the vinyl doesn't look like flat CG white.
-  const img = g.getImageData(0, 0, W, H);
-  const d = img.data;
-  const r = rng(packNo * 13 + 1);
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (r() - 0.5) * 5;
-    d[i] += n;
-    d[i + 1] += n;
-    d[i + 2] += n;
-  }
-  g.putImageData(img, 0, 0);
+  grain(g, W, H, 0.035);
 
   const map = new THREE.CanvasTexture(color);
   map.colorSpace = THREE.SRGBColorSpace;
