@@ -262,6 +262,16 @@ body.ready #stage canvas {
   top: 2px;
 }
 
+.note.flip svg {
+  left: 8px;
+  transform: scaleX(-1);
+}
+
+.note.flip span {
+  left: 70px;
+  transform: rotate(6deg);
+}
+
 .note span {
   position: absolute;
   left: -168px;

@@ -33,37 +33,52 @@ if (foil > 0.002) {
   vec3 N = normal;
   vec3 Rv = reflect(-V, N);
   vec2 uv = vMapUv;
-  float facing = dot(N, V);
 
-  // Shards: a jittered grid, each cell a slightly different grating angle.
-  vec2 cuv = uv * 11.0;
-  vec2 ci = floor(cuv + 0.5 * vec2(holoHash(floor(cuv.yy)), 0.0));
-  float shard = holoHash(ci);
+  // Shattered-glass shards: Voronoi cells, each a tiny mirror at its own tilt.
+  vec2 cg = uv * 8.0;
+  vec2 gi = floor(cg);
+  vec2 gf = fract(cg);
+  float md = 8.0;
+  vec2 cell = vec2(0.0);
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 o = vec2(float(x), float(y));
+      vec2 h = vec2(holoHash(gi + o), holoHash(gi + o + 7.31));
+      vec2 r = o + h - gf;
+      float d = dot(r, r);
+      if (d < md) { md = d; cell = gi + o; }
+    }
+  }
+  vec2 tilt = vec2(holoHash(cell + 3.1), holoHash(cell + 5.7)) - 0.5;
 
-  float phase = facing * 2.6 + Rv.x * 1.9 - Rv.y * 1.4 + (uv.x * 1.2 - uv.y * 0.9) + shard * 0.22 + uTime * 0.015;
+  // Where the colour sits in the spectrum depends mostly on the angle you
+  // look from, so moving the camera (or the sticker) sweeps the rainbow.
+  float view = Rv.x * 3.4 - Rv.y * 2.6 + dot(N, V) * 1.4;
+  float phase = view + dot(tilt, vec2(0.9, 0.7)) + (uv.x - uv.y) * 0.9 + uTime * 0.01;
   vec3 spec = holoSpectrum(phase);
-  vec3 spec2 = holoSpectrum(phase * 1.7 + 0.31);
-  spec = mix(spec, spec2, 0.35);
-  // Keep it pastel-bright like real holographic vinyl, not neon.
-  spec = mix(vec3(dot(spec, vec3(0.333))), spec, 0.9) * 0.85 + 0.25;
+  spec = mix(spec, vec3(1.0), 0.18);
 
   vec3 printed = diffuseColor.rgb;
   float whiteness = smoothstep(0.75, 0.98, min(printed.r, min(printed.g, printed.b)));
-  vec3 foilColor = mix(printed * spec * 1.45, spec, whiteness);
+  vec3 foilColor = mix(printed * spec * 1.5, spec, whiteness);
   diffuseColor.rgb = mix(diffuseColor.rgb, foilColor, foil);
-  metalnessFactor = mix(metalnessFactor, 0.7, foil);
-  roughnessFactor = mix(roughnessFactor, 0.2 + shard * 0.08, foil);
+  metalnessFactor = mix(metalnessFactor, 0.65, foil);
+  roughnessFactor = mix(roughnessFactor, 0.16 + holoHash(cell + 1.3) * 0.1, foil);
 
-  // Glitter.
+  // A soft sheen band that slides across as the view changes.
+  float bandPos = uv.x * 0.8 + uv.y * 0.45 - 0.62 + Rv.x * 2.4 + Rv.y * 1.6;
+  float band = exp(-bandPos * bandPos * 14.0);
+
+  // Glitter: only flashes when a fleck lines up with your eye.
   vec2 guv = uv * 150.0;
-  vec2 gi = floor(guv);
-  vec2 gf = fract(guv) - 0.5;
-  float r1 = holoHash(gi);
-  float r2 = holoHash(gi + 19.17);
+  vec2 gq = floor(guv);
+  vec2 gr = fract(guv) - 0.5;
+  float r1 = holoHash(gq);
+  float r2 = holoHash(gq + 19.17);
   vec3 gn = normalize(vec3(r1 - 0.5, r2 - 0.5, 0.9));
   float glint = pow(max(0.0, sin(dot(Rv, gn) * 26.0 + r1 * 6.2831)), 60.0);
-  float dotShape = smoothstep(0.42, 0.0, length(gf));
-  totalEmissiveRadiance += (spec * 0.12 + vec3(1.0) * glint * dotShape * 1.6) * foil;
+  float dotShape = smoothstep(0.42, 0.0, length(gr));
+  totalEmissiveRadiance += (spec * (0.1 + band * 0.35) + vec3(1.0) * glint * dotShape * 1.6) * foil;
 }
 `;
 

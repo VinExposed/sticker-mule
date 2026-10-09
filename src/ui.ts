@@ -141,6 +141,7 @@ export function mountUi(deps: UiDeps) {
       const x = (p.x * 0.5 + 0.5) * r.width;
       const y = (-p.y * 0.5 + 0.5) * r.height;
       note.style.transform = `translate(${x}px, ${y}px)`;
+      note.classList.toggle('flip', x < 190);
       note.classList.add('show');
     },
   };

@@ -54,6 +54,8 @@ export class Playground {
   private held: Sticker | null = null;
   private orbitDrag: { x: number; y: number; yaw: number; pitch: number } | null = null;
   private userOrbit = { yaw: 0, pitch: 0 };
+  private intro = 0;
+  private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
   private hovered: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null = null;
   private invite: Sticker | null = null;
   private clickToDrop = false;
@@ -101,7 +103,7 @@ export class Playground {
     }
     this.sheetPose = sh;
     // Leave room for the toolbar at the bottom of the screen.
-    const min = portrait ? new THREE.Vector2(-8.5, -17.2) : new THREE.Vector2(-15.7, -11.4);
+    const min = portrait ? new THREE.Vector2(-8.5, -18.6) : new THREE.Vector2(-15.7, -11.4);
     const max = portrait ? new THREE.Vector2(8.5, 27.5) : new THREE.Vector2(17, 12.2);
     this.world.frame(min, max);
   }
@@ -304,8 +306,31 @@ export class Playground {
     return this.rc.ray.intersectPlane(plane, out);
   }
 
+  /** Phones: tilt the device to catch the light on the holo foil. */
+  private enableGyro() {
+    if (this.gyro || !('DeviceOrientationEvent' in window)) return;
+    const start = () => {
+      this.gyro = { x: 0, y: 0, base: null };
+      window.addEventListener('deviceorientation', (e) => {
+        if (e.beta == null || e.gamma == null || !this.gyro) return;
+        const g = this.gyro;
+        g.base ??= { b: e.beta, g: e.gamma };
+        // Slowly re-centre so however you hold the phone becomes "level".
+        g.base.b += (e.beta - g.base.b) * 0.01;
+        g.base.g += (e.gamma - g.base.g) * 0.01;
+        g.x = clamp((e.gamma - g.base.g) / 25, -1, 1);
+        g.y = clamp(-(e.beta - g.base.b) / 25, -1, 1);
+      });
+    };
+    const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
+    if (typeof DOE.requestPermission === 'function') {
+      DOE.requestPermission().then((r) => r === 'granted' && start()).catch(() => {});
+    } else start();
+  }
+
   private onDown = (e: PointerEvent) => {
     this.sfx.unlock();
+    if (e.pointerType === 'touch') this.enableGyro();
     this.setNdc(e);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     this.lastPointerType = e.pointerType;
@@ -543,13 +568,36 @@ export class Playground {
     holoUniforms.uTime.value = time;
     this.inviteClock += dt;
 
-    // Camera: user tilt plus a little parallax from the pointer so the foil
-    // always has something to play with.
-    const px = this.hasPointer && !this.orbitDrag ? this.ndc.x : 0;
-    const py = this.hasPointer && !this.orbitDrag ? this.ndc.y : 0;
+    // Camera: user tilt plus a little parallax from the pointer (or the
+    // phone's gyro) so the foil always has something to play with.
+    let px = this.hasPointer && !this.orbitDrag ? this.ndc.x : 0;
+    let py = this.hasPointer && !this.orbitDrag ? this.ndc.y : 0;
+    if (this.gyro) {
+      px = this.gyro.x;
+      py = this.gyro.y;
+    }
     const idle = Math.sin(time * 0.35) * 0.015;
-    this.world.orbit.tYaw = this.userOrbit.yaw - px * 0.05 + idle;
-    this.world.orbit.tPitch = this.userOrbit.pitch - py * 0.035;
+    // Let go of a tilt and the desk swings back, like a lazy susan.
+    if (!this.orbitDrag) {
+      const k = 1 - Math.exp(-dt * 2.2);
+      this.userOrbit.yaw -= this.userOrbit.yaw * k;
+      this.userOrbit.pitch -= this.userOrbit.pitch * k;
+    }
+    // Opening shot: start low and turned, settle into the top-down view.
+    let introYaw = 0;
+    let introPitch = 0;
+    if (this.intro < 1) {
+      this.intro = Math.min(1, this.intro + dt / 2.4);
+      const e = 1 - easeInOut(this.intro);
+      introYaw = 0.5 * e;
+      introPitch = -0.5 * e;
+    }
+    this.world.orbit.tYaw = this.userOrbit.yaw - px * 0.05 + idle + introYaw;
+    this.world.orbit.tPitch = this.userOrbit.pitch - py * 0.035 + introPitch;
+    if (this.intro < 1) {
+      this.world.orbit.yaw = this.world.orbit.tYaw;
+      this.world.orbit.pitch = this.world.orbit.tPitch;
+    }
     this.world.tick(dt);
 
     for (const st of this.stickers) {
@@ -584,7 +632,7 @@ export class Playground {
     const k = 260;
     const c = 2 * 0.5 * Math.sqrt(k);
     let goal = m.hoverGoal;
-    let reach = 0.16;
+    let reach = 0.12;
     if (st === this.invite) {
       // Every few seconds, the corner flutters as if someone breathed on it.
       const t = this.inviteClock % 3.2;
@@ -735,6 +783,8 @@ export class Playground {
         m.slapped = true;
         const speed = (m.dropFrom - st.baseY) / T1;
         this.sfx.slap(0.4 + speed / 40);
+        // A tiny camera kick sells the impact.
+        this.world.orbit.pitch -= 0.004;
         if ('vibrate' in navigator) navigator.vibrate?.(12);
       }
       const u = t - T1;
@@ -788,7 +838,7 @@ export class Playground {
   /** World position of the inviting corner (for the "peel me" note). */
   invitePoint(out: THREE.Vector3): THREE.Vector3 | null {
     const st = this.invite;
-    if (!st) return null;
+    if (!st || this.intro < 1) return null;
     const m = this.motion.get(st)!;
     return st.worldPoint(m.grab.x, m.grab.y, out);
   }
@@ -898,6 +948,10 @@ function farthest(st: Sticker, gx: number, gy: number) {
   let best = 0.5;
   for (let i = 0; i < p.length; i += 2) best = Math.max(best, Math.hypot(p[i] - gx, p[i + 1] - gy));
   return best;
+}
+
+function easeInOut(t: number) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 function clamp(x: number, a: number, b: number) {

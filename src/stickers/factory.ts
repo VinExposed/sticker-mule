@@ -166,7 +166,7 @@ export function buildSticker(o: BuildOptions): StickerSource {
     const bg = back.getContext('2d')!;
     bg.drawImage(crop(cut, b, 2), 0, 0);
     bg.globalCompositeOperation = 'source-in';
-    bg.fillStyle = '#f1f1ee';
+    bg.fillStyle = '#e6e5e1';
     bg.fillRect(0, 0, back.width, back.height);
     bg.globalCompositeOperation = 'source-over';
     noise(bg, back.width, back.height, 10);
