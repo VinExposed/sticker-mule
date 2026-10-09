@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { installPcss } from './pcss';
-import { canvasTexture, clothTexture, deskTextures, pageEdgeTexture } from './textures';
+import { canvasTexture, clothTexture, deskTextures, pageEdgeTexture, stampTexture } from './textures';
 
 /** A flat area stickers can stick to. Rectangle in its own frame. */
 export interface Surface {
@@ -149,6 +149,23 @@ export class World {
 
     // Ribbon bookmark trailing out of the pages onto the desk.
     const ribbon = this.ribbon();
+
+    // Gloss-stamped wordmark near the bottom of the cover: barely there until
+    // it catches the light.
+    const stamp = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.4, 1.2),
+      new THREE.MeshStandardMaterial({
+        map: canvasTexture(stampTexture(), true, 1),
+        transparent: true,
+        roughness: 0.22,
+        metalness: 0.5,
+        depthWrite: false,
+      }),
+    );
+    stamp.rotation.x = -Math.PI / 2;
+    stamp.position.set(-0.35, t + 0.002, d / 2 - 2.1);
+    stamp.receiveShadow = true;
+    this.notebook.add(stamp);
 
     for (const m of [top, bottom, spine, pages, bandTop, bandFront, bandBack, ribbon]) {
       m.castShadow = true;
