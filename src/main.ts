@@ -68,6 +68,7 @@ async function main() {
   let running = false;
   let quiet = 0;
   let wakeTimer = 0;
+  let lastDraw = 0;
   const wake = () => {
     quiet = 0;
     if (running) return;
@@ -82,8 +83,16 @@ async function main() {
     play.update(dt);
     world.adapt(dt);
     ui.frame();
-    const drew = world.render();
-    quiet = drew || play.busy() ? 0 : quiet + 1;
+    // While you're dragging, draw every display frame. Everything else
+    // (parallax, settling springs, the intro) is capped at ~60fps, which
+    // halves the cost on 120/144Hz screens.
+    let drew = false;
+    let deferred = false;
+    if (play.manipulating() || now - lastDraw > 15.5) {
+      drew = world.render();
+      if (drew) lastDraw = now;
+    } else deferred = world.pending();
+    quiet = drew || deferred || play.busy() ? 0 : quiet + 1;
     if (quiet > 8) {
       running = false;
       clearTimeout(wakeTimer);

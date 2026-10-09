@@ -886,6 +886,11 @@ export class Playground {
     return false;
   }
 
+  /** Is the user dragging something right now? (Those frames get full rate.) */
+  manipulating() {
+    return !!(this.held || this.orbitDrag);
+  }
+
   /** Seconds until something wants to animate on its own (the invite flutter). */
   nextWakeIn(): number | null {
     if (!this.invite) return null;

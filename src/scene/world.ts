@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { installPcss, PcssMinMax } from './pcss';
+import { installPcss, PcssMinMax, pcssSearchUv } from './pcss';
 import { canvasTexture, clothTexture, deskTextures, pageEdgeTexture, stampTexture } from './textures';
 
 /** A flat area stickers can stick to. Rectangle in its own frame. */
@@ -17,6 +17,8 @@ export interface Surface {
 
 const SHADOW_SPAN = 70;
 const SHADOW_MAP = 1024;
+/** Light's angular size (tan): how fast shadows soften with height. */
+const LIGHT_SIZE = 0.2;
 const SHADOW_NEAR = 30;
 const SHADOW_FAR = 110;
 
@@ -50,7 +52,7 @@ export class World {
     // Shadows are only re-rendered when something actually moved.
     renderer.shadowMap.autoUpdate = false;
     renderer.shadowMap.type = THREE.BasicShadowMap;
-    installPcss(SHADOW_SPAN, SHADOW_FAR - SHADOW_NEAR, 0.2);
+    installPcss(SHADOW_SPAN, LIGHT_SIZE);
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 0.92;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -83,7 +85,7 @@ export class World {
     const hemi = new THREE.HemisphereLight('#f4f1ff', '#a89c8c', 0.35);
     this.scene.add(hemi);
 
-    this.minMax = new PcssMinMax(renderer, SHADOW_MAP);
+    this.minMax = new PcssMinMax(renderer, SHADOW_MAP, pcssSearchUv(SHADOW_SPAN, LIGHT_SIZE) * SHADOW_MAP);
     this.buildDesk();
     this.buildNotebook();
     this.notebookSurface = {
@@ -348,7 +350,7 @@ export class World {
     r.render(this.scene, this.nowhere);
     r.setRenderTarget(prev);
     const depth = this.key.shadow.map?.depthTexture;
-    if (depth) this.minMax.update(depth);
+    if (depth) this.minMax.update(depth, this.key.shadow.matrix);
   }
 
   /** Let a newly added object's materials use the shadow min/max texture. */
@@ -357,6 +359,11 @@ export class World {
       const mat = (o as THREE.Mesh).material;
       if (mat) for (const m of Array.isArray(mat) ? mat : [mat]) this.minMax.patch(m);
     });
+  }
+
+  /** Is there something waiting to be drawn? */
+  pending() {
+    return this.needsRender || this.shadowsDirty;
   }
 
   /** Draw if anything changed (or always, when `force`, e.g. for a snapshot). */
