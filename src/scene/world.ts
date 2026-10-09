@@ -13,8 +13,6 @@ export interface Surface {
   w: number;
   d: number;
   top: number;
-  /** How fast the edge falls away (cm). */
-  edge: number;
 }
 
 const SHADOW_SPAN = 70;
@@ -44,6 +42,8 @@ export class World {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = true;
+    // Shadows are only re-rendered when something actually moved.
+    renderer.shadowMap.autoUpdate = false;
     renderer.shadowMap.type = THREE.BasicShadowMap;
     installPcss(SHADOW_SPAN, SHADOW_FAR - SHADOW_NEAR, 0.2);
     renderer.toneMapping = THREE.NeutralToneMapping;
@@ -88,7 +88,6 @@ export class World {
       w: NOTEBOOK.w,
       d: NOTEBOOK.d,
       top: NOTEBOOK.t,
-      edge: 0.18,
     };
     this.surfaces.push(this.notebookSurface);
   }
@@ -194,24 +193,6 @@ export class World {
     );
   }
 
-  /** Height of whatever is under (x, z). */
-  heightAt = (x: number, z: number): number => {
-    let h = 0;
-    for (const s of this.surfaces) {
-      const c = Math.cos(s.yaw);
-      const sn = Math.sin(s.yaw);
-      const dx = x - s.x;
-      const dz = z - s.z;
-      const lx = Math.abs(c * dx - sn * dz) - s.w / 2;
-      const lz = Math.abs(sn * dx + c * dz) - s.d / 2;
-      const out = Math.max(lx, lz);
-      if (out > s.edge) continue;
-      const k = out <= 0 ? 1 : 1 - smooth(out / s.edge);
-      h = Math.max(h, s.top * k);
-    }
-    return h;
-  };
-
   surfaceAt(x: number, z: number): Surface | null {
     let best: Surface | null = null;
     for (const s of this.surfaces) {
@@ -238,6 +219,7 @@ export class World {
   }
 
   resize() {
+    this.shadowsDirty = true;
     const el = this.renderer.domElement.parentElement!;
     const w = el.clientWidth;
     const h = el.clientHeight;
@@ -275,12 +257,35 @@ export class World {
     this.updateCamera();
   }
 
+  /** Set when anything that casts a shadow moved this frame. */
+  shadowsDirty = true;
+  private slowFrames = 0;
+  private fastFrames = 0;
+  private pixelRatio = Math.min(window.devicePixelRatio, 2);
+
+  /** Drop resolution on GPUs that can't keep up; creep back when they can. */
+  adapt(dt: number) {
+    if (dt > 1 / 45) this.slowFrames++;
+    else this.slowFrames = Math.max(0, this.slowFrames - 1);
+    if (dt < 1 / 58) this.fastFrames++;
+    else this.fastFrames = 0;
+    const max = Math.min(window.devicePixelRatio, 2);
+    let next = this.pixelRatio;
+    if (this.slowFrames > 40) next = Math.max(1, this.pixelRatio - 0.25);
+    else if (this.fastFrames > 300) next = Math.min(max, this.pixelRatio + 0.25);
+    if (next !== this.pixelRatio) {
+      this.pixelRatio = next;
+      this.renderer.setPixelRatio(next);
+      this.slowFrames = 0;
+      this.fastFrames = 0;
+    }
+  }
+
   render() {
+    if (this.shadowsDirty) {
+      this.renderer.shadowMap.needsUpdate = true;
+      this.shadowsDirty = false;
+    }
     this.renderer.render(this.scene, this.camera);
   }
-}
-
-function smooth(t: number) {
-  const x = Math.min(1, Math.max(0, t));
-  return x * x * (3 - 2 * x);
 }

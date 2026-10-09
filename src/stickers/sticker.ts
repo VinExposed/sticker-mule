@@ -1,15 +1,15 @@
 import * as THREE from 'three';
 import { deform, type DeformOut, type PeelState } from '../peel/model';
+import { fitsOn, wrapPoint, type Box, type Wrapped } from '../peel/wrap';
 import type { StickerSource } from './factory';
 import { stickerMaterials, type StickerMaterials } from './materials';
 
 export type StickerMode = 'stuck' | 'peeling' | 'carried' | 'dropping';
 
-/** Height of the surface under a world-space point (cm). */
-export type HeightField = (x: number, z: number) => number;
 
 let nextId = 1;
 const tmp: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
+const wrapped: Wrapped = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 };
 const m4 = new THREE.Matrix4();
 const m4b = new THREE.Matrix4();
 const q = new THREE.Quaternion();
@@ -56,7 +56,8 @@ export class Sticker {
   bend = 0;
   bendReach = 1;
 
-  heightField: HeightField | null = null;
+  /** What it's stuck to; parts hanging past its edges wrap over them. */
+  support: Box | null = null;
   dirty = true;
 
   constructor(src: StickerSource, maxAniso: number) {
@@ -107,8 +108,8 @@ export class Sticker {
   }
 
   /** Recompute the transform and the deformed vertices. */
-  update() {
-    if (!this.dirty) return;
+  update(): boolean {
+    if (!this.dirty) return false;
     this.dirty = false;
     const flying = this.mode === 'carried' || this.mode === 'dropping';
     const peel = this.peel;
@@ -134,7 +135,7 @@ export class Sticker {
     const nor = this.geometry.attributes.normal.array as Float32Array;
     const rest = this.rest;
     const n = rest.length / 2;
-    const hf = flying ? null : this.heightField;
+    const sup = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
     const c = Math.cos(this.yaw);
     const s = Math.sin(this.yaw);
     const gx = this.grab.x;
@@ -176,11 +177,18 @@ export class Sticker {
           ny *= l;
           nz *= l;
         }
-      } else if (hf && d.z < 1e-5) {
-        // Stuck parts hug the surface (e.g. wrap over the notebook's edge).
-        const wx = this.x + c * d.x + s * d.y;
-        const wz = this.z - s * d.x + c * d.y;
-        y = Math.min(0, hf(wx, wz) + this.layer - this.baseY);
+      } else if (sup && d.z < 1e-5 && wrapPoint(sup, this.x + c * d.x + s * d.y, this.z - s * d.x + c * d.y, wrapped)) {
+        // Hanging past the edge: fold over it, down the side, onto the desk.
+        const L = this.layer;
+        const ox = wrapped.x + wrapped.nx * L - this.x;
+        const oz = wrapped.z + wrapped.nz * L - this.z;
+        pos[i * 3] = c * ox - s * oz;
+        pos[i * 3 + 1] = wrapped.y + wrapped.ny * L - this.baseY;
+        pos[i * 3 + 2] = s * ox + c * oz;
+        nor[i * 3] = c * wrapped.nx - s * wrapped.nz;
+        nor[i * 3 + 1] = wrapped.ny;
+        nor[i * 3 + 2] = s * wrapped.nx + c * wrapped.nz;
+        continue;
       }
       pos[i * 3] = d.x;
       pos[i * 3 + 1] = y;
@@ -192,6 +200,7 @@ export class Sticker {
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.attributes.normal.needsUpdate = true;
     this.geometry.computeBoundingSphere();
+    return true;
   }
 
   /** World position of a rest-pose point in the current shape. */

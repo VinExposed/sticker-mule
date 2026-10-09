@@ -22,6 +22,7 @@ const icon = {
   link: '<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
   sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/>',
   mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6M22 9l-5 6"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   trash: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
 };
 
@@ -36,8 +37,17 @@ export function mountUi(deps: UiDeps) {
       <p>a ridiculously satisfying sticker playground</p>
     </header>
     <div class="corner">
+      <button class="icon-btn" data-act="about" title="How it works" aria-label="How it works">${svg(icon.info)}</button>
       <button class="icon-btn" data-act="sound" title="Sound on/off" aria-label="Toggle sound">${svg(icon.sound)}</button>
     </div>
+    <aside class="about" hidden>
+      <h3>How it works</h3>
+      <p><b>The peel</b> is an inextensible sheet folded over a cylinder. The fold line is solved every frame so the exact point you grabbed stays under your cursor. Drag across the sticker to fold it back. Pull away and it lifts until the tension pops it free.</p>
+      <p><b>Shadows</b> are percentage-closer soft shadows: crisp under a lifted corner, wide and faint under a sticker you’re holding.</p>
+      <p><b>Holo</b> stickers use a foil shader with shattered-glass shards and glitter that catch the light as the view moves. Drag the desk to tilt.</p>
+      <p><b>Everything is generated:</b> textures, die-cut borders, the sheet, and the crackle and slap sounds. Nothing is downloaded except the code.</p>
+      <p class="keys"><kbd>drag</kbd> peel · <kbd>scroll</kbd> spin while holding · <kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>drag desk</kbd> tilt</p>
+    </aside>
     <nav class="dock" aria-label="Tools">
       <button data-act="make">${svg(icon.pencil)}<span>Make your own</span></button>
       <button data-act="pack">${svg(icon.pack)}<span>New pack</span></button>
@@ -82,6 +92,11 @@ export function mountUi(deps: UiDeps) {
   const act = async (name: string, btn: HTMLButtonElement) => {
     deps.sfx.unlock();
     switch (name) {
+      case 'about': {
+        const about = root.querySelector<HTMLElement>('.about')!;
+        about.hidden = !about.hidden;
+        break;
+      }
       case 'sound': {
         deps.sfx.setMuted(!deps.sfx.muted);
         btn.innerHTML = svg(deps.sfx.muted ? icon.mute : icon.sound);

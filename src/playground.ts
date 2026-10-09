@@ -143,7 +143,7 @@ export class Playground {
     const slots = layoutPack(sources, seed);
     const built = buildSheet(slots, this.packNo);
     const name = `sheet-${this.packNo}`;
-    const surface: Surface = { name, x: 0, z: 0, yaw: 0, w: SHEET.w, d: SHEET.d, top: SHEET.t, edge: 0.04 };
+    const surface: Surface = { name, x: 0, z: 0, yaw: 0, w: SHEET.w, d: SHEET.d, top: SHEET.t };
     this.world.surfaces.push(surface);
     this.world.scene.add(built.mesh);
     this.sheet = { mesh: built.mesh, surface, name, dispose: built.dispose };
@@ -168,6 +168,7 @@ export class Playground {
       st.z = sz - s * slot.x + c * slot.y;
       st.yaw = syaw + slot.yaw;
       st.surface = sheet.name;
+      st.support = sheet.surface;
       st.layer = 0.006;
       st.baseY = SHEET.t + st.layer;
       st.dirty = true;
@@ -178,7 +179,6 @@ export class Playground {
 
   add(src: StickerSource) {
     const st = new Sticker(src, this.maxAniso);
-    st.heightField = this.world.heightAt;
     this.stickers.push(st);
     this.world.scene.add(st.root);
     this.motion.set(st, blankMotion());
@@ -206,6 +206,7 @@ export class Playground {
       const dx = dir.x * 50 * e;
       const dz = dir.z * 50 * e;
       old.mesh.position.set(from.x + dx, 0, from.z + dz);
+      this.world.shadowsDirty = true;
       for (const o of offs) {
         o.s.x = o.x + dx;
         o.s.z = o.z + dz;
@@ -231,6 +232,7 @@ export class Playground {
       const dz = (1 - e) * 34;
       const dx = (1 - e) * -4;
       mesh.position.set(to.x + dx, 0, to.z + dz);
+      this.world.shadowsDirty = true;
       for (const o of offs) {
         o.s.x = o.x + dx;
         o.s.z = o.z + dz;
@@ -525,6 +527,23 @@ export class Playground {
     st.dirty = true;
   }
 
+  /**
+   * The highest surface under a sticker's footprint is what it sticks to;
+   * whatever hangs off that surface wraps over its edge.
+   */
+  footprint(st: Sticker, cx: number, cz: number) {
+    const c = Math.cos(st.yaw);
+    const s = Math.sin(st.yaw);
+    const pts = st.src.points;
+    let best: Surface | null = null;
+    const stride = Math.max(2, Math.floor(pts.length / 2 / 60) * 2);
+    for (let i = 0; i < pts.length; i += stride) {
+      const hit = this.world.surfaceAt(cx + c * pts[i] + s * pts[i + 1], cz - s * pts[i] + c * pts[i + 1]);
+      if (hit && (!best || hit.top > best.top)) best = hit;
+    }
+    return { top: best?.top ?? 0, surface: best };
+  }
+
   private drop(st: Sticker) {
     const m = this.motion.get(st)!;
     // Where will it land? Centre under the current pose.
@@ -532,16 +551,7 @@ export class Playground {
     const s = Math.sin(st.yaw);
     const cx = st.pivot.x - (c * st.grab.x + s * st.grab.y);
     const cz = st.pivot.z - (-s * st.grab.x + c * st.grab.y);
-    // Rest on the highest thing under the footprint (and drape over the rest).
-    const pts = st.src.points;
-    let h0 = 0;
-    const stride = Math.max(2, Math.floor(pts.length / 2 / 60) * 2);
-    for (let i = 0; i < pts.length; i += stride) {
-      const wx = cx + c * pts[i] + s * pts[i + 1];
-      const wz = cz - s * pts[i] + c * pts[i + 1];
-      h0 = Math.max(h0, this.world.heightAt(wx, wz));
-    }
-    const surf = this.world.surfaceAt(cx, cz);
+    const { top: h0, surface: surf } = this.footprint(st, cx, cz);
     // Stack on top of any stickers already there.
     let layer = LAYER * 0.5;
     const rad = st.radius() * 0.8;
@@ -555,6 +565,7 @@ export class Playground {
     st.layer = layer;
     st.baseY = h0 + layer;
     st.surface = surf?.name ?? 'desk';
+    st.support = surf;
     st.mode = 'dropping';
     m.dropT = 0;
     m.dropFrom = st.pivot.y;
@@ -616,7 +627,7 @@ export class Playground {
           this.stepDrop(st, m, dt);
           break;
       }
-      st.update();
+      if (st.update()) this.world.shadowsDirty = true;
     }
   }
 

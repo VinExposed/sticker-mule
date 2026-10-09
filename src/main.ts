@@ -14,7 +14,8 @@ async function main() {
   const lib = new Library();
   const play = new Playground(world, sfx);
   play.layout();
-  (window as unknown as { __peel: unknown }).__peel = { play, world, THREE };
+  // Handle for scripted browser tests during development.
+  if (import.meta.env.DEV) (window as unknown as { __peel: unknown }).__peel = { play, world, THREE };
 
   const pack = await makePack(lib, 0);
   const placed = play.newPack(pack, 4);
@@ -63,6 +64,7 @@ async function main() {
     const dt = Math.min(clock.getDelta(), 1 / 30);
     time += dt;
     play.update(dt, time);
+    world.adapt(dt);
     ui.frame();
     world.render();
     requestAnimationFrame(loop);
@@ -130,9 +132,10 @@ async function restore(play: Playground, lib: Library, comp: Composition) {
     st.z = nb.z - nb.s * saved.x + nb.c * saved.z;
     st.yaw = saved.a + nb.yaw;
     st.layer = saved.l;
-    const surf = play.world.surfaceAt(st.x, st.z);
-    st.surface = surf?.name ?? 'desk';
-    st.baseY = (surf?.top ?? 0) + st.layer;
+    const { top, surface } = play.footprint(st, st.x, st.z);
+    st.surface = surface?.name ?? 'desk';
+    st.support = surface;
+    st.baseY = top + st.layer;
     st.dirty = true;
     n++;
   }
