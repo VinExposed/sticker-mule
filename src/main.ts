@@ -99,6 +99,9 @@ async function main() {
   }
   document.body.classList.add('ready');
   wake();
+  // Build the audio graph while nothing's happening, not in the first click.
+  const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
+  idle(() => sfx.prepare());
 }
 
 /** Ten characters plus two bonus pulls, shuffled. */

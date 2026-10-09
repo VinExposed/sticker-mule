@@ -207,6 +207,8 @@ export class Playground {
     const start = performance.now();
     const from = old.mesh.position.clone();
     const offs = leftovers.map((s) => ({ s, x: s.x, z: s.z }));
+    // Off the sheet's footprint while they move: nothing to wrap around.
+    for (const o of offs) o.s.support = null;
     const dir = new THREE.Vector3(1, 0, -0.25).normalize();
     const step = () => {
       const t = Math.min(1, (performance.now() - start) / 650);
@@ -234,7 +236,8 @@ export class Playground {
   private slideIn(mesh: THREE.Mesh, stickers: Sticker[]) {
     const start = performance.now();
     const to = mesh.position.clone();
-    const offs = stickers.map((s) => ({ s, x: s.x, z: s.z }));
+    const offs = stickers.map((s) => ({ s, x: s.x, z: s.z, support: s.support }));
+    for (const o of offs) o.s.support = null;
     const step = () => {
       const t = Math.min(1, (performance.now() - start) / 700);
       const e = 1 - Math.pow(1 - t, 4);
@@ -249,6 +252,7 @@ export class Playground {
       }
       this.wake();
       if (t < 1) requestAnimationFrame(step);
+      else for (const o of offs) if (o.s.mode === 'stuck') o.s.support = o.support;
     };
     step();
   }

@@ -83,7 +83,37 @@ export interface StickerMaterials {
   dispose(): void;
 }
 
-export function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterials {
+const shared = new WeakMap<StickerSource, { mats: StickerMaterials; users: number }>();
+
+/**
+ * Materials (and their textures) are shared by every sticker cut from the
+ * same design, so a second "Peel Me" costs no extra texture memory or upload.
+ * Released when the last user goes away.
+ */
+export function acquireMaterials(src: StickerSource, maxAniso: number): StickerMaterials {
+  let entry = shared.get(src);
+  if (!entry) {
+    entry = { mats: stickerMaterials(src, maxAniso), users: 0 };
+    shared.set(src, entry);
+  }
+  entry.users++;
+  const e = entry;
+  let released = false;
+  return {
+    front: e.mats.front,
+    back: e.mats.back,
+    dispose() {
+      if (released) return;
+      released = true;
+      if (--e.users === 0) {
+        e.mats.dispose();
+        shared.delete(src);
+      }
+    },
+  };
+}
+
+function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterials {
   const map = texture(src.front, true, maxAniso);
   const backMap = texture(src.back, true, maxAniso);
   const foilMap = texture(src.foil, false, maxAniso);

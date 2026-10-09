@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { deform, type DeformOut, type PeelState } from '../peel/model';
 import { fitsOn, wrapPoint, type Box, type Wrapped } from '../peel/wrap';
 import type { StickerSource } from './factory';
-import { stickerMaterials, type StickerMaterials } from './materials';
+import { acquireMaterials, type StickerMaterials } from './materials';
 
 export type StickerMode = 'stuck' | 'peeling' | 'carried' | 'dropping';
 
@@ -27,13 +27,16 @@ export class Sticker {
   readonly root = new THREE.Group();
   readonly front: THREE.Mesh;
   readonly back: THREE.Mesh;
-  /** Fine grid for curling/wrapping; a plain quad when lying flat. */
-  readonly geometry: THREE.BufferGeometry;
+  /**
+   * Fine grid for curling/wrapping, built the first time it's needed; a plain
+   * quad when lying flat (most stickers, most of the time).
+   */
+  private geometry: THREE.BufferGeometry | null = null;
   private readonly quad: THREE.BufferGeometry;
   materials: StickerMaterials;
 
   /** Rest-pose vertex positions in sticker space (cm, y down). */
-  private rest: Float32Array;
+  private rest: Float32Array | null = null;
   private cols: number;
   private rows: number;
 
@@ -67,14 +70,12 @@ export class Sticker {
     const long = 84;
     this.cols = Math.max(12, Math.round((src.width / Math.max(src.width, src.height)) * long));
     this.rows = Math.max(12, Math.round((src.height / Math.max(src.width, src.height)) * long));
-    const { geometry, rest } = grid(src.width, src.height, this.cols, this.rows);
-    this.geometry = geometry;
     this.quad = grid(src.width, src.height, 1, 1).geometry;
     this.quad.computeBoundingSphere();
-    this.rest = rest;
-    this.materials = stickerMaterials(src, maxAniso);
-    this.front = new THREE.Mesh(geometry, this.materials.front);
-    this.back = new THREE.Mesh(geometry, this.materials.back);
+    this.materials = acquireMaterials(src, maxAniso);
+    this.front = new THREE.Mesh(this.quad, this.materials.front);
+    this.back = new THREE.Mesh(this.quad, this.materials.back);
+    this.back.visible = false;
     for (const m of [this.front, this.back]) {
       // Same surface: one shadow caster is enough.
       m.castShadow = m === this.front;
@@ -83,13 +84,6 @@ export class Sticker {
       this.root.add(m);
     }
     this.root.matrixAutoUpdate = false;
-  }
-
-  setMaterials(m: StickerMaterials) {
-    this.materials.dispose();
-    this.materials = m;
-    this.front.material = m.front;
-    this.back.material = m.back;
   }
 
   /** World XZ of a sticker-space point when lying flat. */
@@ -140,7 +134,12 @@ export class Sticker {
     // Lying flat with nothing to wrap: two triangles will do, and the back
     // face can't be seen.
     const simple = !flying && flat && !sup;
-    const geo = simple ? this.quad : this.geometry;
+    if (!simple && !this.geometry) {
+      const g = grid(this.src.width, this.src.height, this.cols, this.rows);
+      this.geometry = g.geometry;
+      this.rest = g.rest;
+    }
+    const geo = simple ? this.quad : this.geometry!;
     if (this.front.geometry !== geo) {
       this.front.geometry = geo;
       this.back.geometry = geo;
@@ -148,12 +147,15 @@ export class Sticker {
     this.back.visible = !simple;
     if (simple) return true;
 
-    const pos = this.geometry.attributes.position.array as Float32Array;
-    const nor = this.geometry.attributes.normal.array as Float32Array;
-    const rest = this.rest;
+    const geometry = this.geometry!;
+    const pos = geometry.attributes.position.array as Float32Array;
+    const nor = geometry.attributes.normal.array as Float32Array;
+    const rest = this.rest!;
     const n = rest.length / 2;
     const c = Math.cos(this.yaw);
     const s = Math.sin(this.yaw);
+    const sc = sup ? Math.cos(sup.yaw) : 1;
+    const ss = sup ? Math.sin(sup.yaw) : 0;
     const gx = this.grab.x;
     const gy = this.grab.y;
     const k = flying ? this.bend / (this.bendReach * this.bendReach) : 0;
@@ -193,7 +195,7 @@ export class Sticker {
           ny *= l;
           nz *= l;
         }
-      } else if (sup && d.z < 1e-5 && wrapPoint(sup, this.x + c * d.x + s * d.y, this.z - s * d.x + c * d.y, wrapped)) {
+      } else if (sup && d.z < 1e-5 && wrapPoint(sup, this.x + c * d.x + s * d.y, this.z - s * d.x + c * d.y, wrapped, sc, ss)) {
         // Hanging past the edge: fold over it, down the side, onto the desk.
         const L = this.layer;
         const ox = wrapped.x + wrapped.nx * L - this.x;
@@ -213,9 +215,14 @@ export class Sticker {
       nor[i * 3 + 1] = ny;
       nor[i * 3 + 2] = nz;
     }
-    this.geometry.attributes.position.needsUpdate = true;
-    this.geometry.attributes.normal.needsUpdate = true;
-    this.geometry.computeBoundingSphere();
+    geometry.attributes.position.needsUpdate = true;
+    geometry.attributes.normal.needsUpdate = true;
+    // Peeling and wrapping never stretch the sheet, so every point stays
+    // within half a diagonal of the middle vertex. No need to scan them all.
+    const mid = ((this.rows >> 1) * (this.cols + 1) + (this.cols >> 1)) * 3;
+    const bs = (geometry.boundingSphere ??= new THREE.Sphere());
+    bs.center.set(pos[mid], pos[mid + 1], pos[mid + 2]);
+    bs.radius = this.radius() * 1.08 + Math.abs(this.bend);
     return true;
   }
 
@@ -253,10 +260,49 @@ export class Sticker {
   }
 
   dispose() {
-    this.geometry.dispose();
+    this.geometry?.dispose();
     this.quad.dispose();
     this.materials.dispose();
   }
+}
+
+/** Index and UV buffers depend only on the grid resolution: share them. */
+const topology = new Map<string, { index: THREE.BufferAttribute; uv: THREE.BufferAttribute }>();
+
+function gridTopology(cols: number, rows: number) {
+  const key = `${cols}x${rows}`;
+  let t = topology.get(key);
+  if (t) return t;
+  const n = (cols + 1) * (rows + 1);
+  const uv = new Float32Array(n * 2);
+  let i = 0;
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c <= cols; c++) {
+      uv[i * 2] = c / cols;
+      uv[i * 2 + 1] = 1 - r / rows;
+      i++;
+    }
+  }
+  const index = new Uint16Array(cols * rows * 6);
+  let k = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const a = r * (cols + 1) + c;
+      const b = a + 1;
+      const d = a + cols + 1;
+      const e = d + 1;
+      // Counter-clockwise seen from +Y (x right, z toward the viewer).
+      index[k++] = a;
+      index[k++] = d;
+      index[k++] = b;
+      index[k++] = b;
+      index[k++] = d;
+      index[k++] = e;
+    }
+  }
+  t = { index: new THREE.BufferAttribute(index, 1), uv: new THREE.BufferAttribute(uv, 2) };
+  topology.set(key, t);
+  return t;
 }
 
 /** Grid in sticker space: x right, y down (matching the canvas), lift on +Y. */
@@ -265,7 +311,6 @@ function grid(w: number, h: number, cols: number, rows: number) {
   const rest = new Float32Array(n * 2);
   const position = new Float32Array(n * 3);
   const normal = new Float32Array(n * 3);
-  const uv = new Float32Array(n * 2);
   let i = 0;
   for (let r = 0; r <= rows; r++) {
     for (let c = 0; c <= cols; c++) {
@@ -278,26 +323,14 @@ function grid(w: number, h: number, cols: number, rows: number) {
       position[i * 3] = x;
       position[i * 3 + 2] = y;
       normal[i * 3 + 1] = 1;
-      uv[i * 2] = u;
-      uv[i * 2 + 1] = 1 - v;
       i++;
     }
   }
-  const index: number[] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const a = r * (cols + 1) + c;
-      const b = a + 1;
-      const d = a + cols + 1;
-      const e = d + 1;
-      // Counter-clockwise seen from +Y (x right, z toward the viewer).
-      index.push(a, d, b, b, d, e);
-    }
-  }
+  const topo = gridTopology(cols, rows);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(position, 3).setUsage(THREE.DynamicDrawUsage));
   geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3).setUsage(THREE.DynamicDrawUsage));
-  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  geometry.setIndex(index);
+  geometry.setAttribute('uv', topo.uv);
+  geometry.setIndex(topo.index);
   return { geometry, rest };
 }

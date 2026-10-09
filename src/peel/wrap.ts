@@ -42,9 +42,7 @@ export function fitsOn(b: Box, x: number, z: number, radius: number): boolean {
  * Returns false (and leaves `out` alone) if the point is on the top face.
  * `out` receives the world position (y absolute) and outward normal.
  */
-export function wrapPoint(b: Box, wx: number, wz: number, out: Wrapped): boolean {
-  const c = Math.cos(b.yaw);
-  const s = Math.sin(b.yaw);
+export function wrapPoint(b: Box, wx: number, wz: number, out: Wrapped, c = Math.cos(b.yaw), s = Math.sin(b.yaw)): boolean {
   const dx = wx - b.x;
   const dz = wz - b.z;
   const lx = c * dx - s * dz;

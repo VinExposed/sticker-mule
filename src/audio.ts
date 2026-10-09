@@ -12,12 +12,23 @@ export class Sfx {
   private crackleBudget = 0;
   muted = false;
 
+  /**
+   * Create the audio graph ahead of time (it starts suspended). Creating an
+   * AudioContext can take ~100ms, which we'd rather not spend inside the
+   * first click.
+   */
+  prepare() {
+    if (this.ctx) return;
+    this.create();
+  }
+
   /** Must be called from a user gesture. */
   unlock() {
-    if (this.ctx) {
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
-      return;
-    }
+    if (!this.ctx) this.create();
+    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  private create() {
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return;
     const ctx = new AC();
