@@ -61,7 +61,9 @@ export class Playground {
   private invite: Sticker | null = null;
   private clickToDrop = false;
   private lastPointerType = 'mouse';
-  private inviteClock = 0;
+  private inviteStart = performance.now();
+  /** Set by the app: restarts the frame loop if it went to sleep. */
+  wake: () => void = () => {};
   private maxAniso: number;
   onFirstPeel: (() => void) | null = null;
   onChange: (() => void) | null = null;
@@ -90,6 +92,7 @@ export class Playground {
 
   /** Lay out the desk for the current viewport. */
   layout() {
+    this.wake();
     const portrait = window.innerHeight > window.innerWidth * 1.05;
     const nb = portrait ? { x: 0, z: -6.2, yaw: 0.02 } : { x: -7.4, z: 0, yaw: 0.035 };
     const sh = portrait ? { x: 0.6, z: 14.4, yaw: -0.05 } : { x: 9.6, z: 0.6, yaw: -0.07 };
@@ -133,6 +136,7 @@ export class Playground {
 
   /** Replace the sheet with a fresh pack. */
   newPack(sources: StickerSource[], seed = Date.now()) {
+    this.wake();
     this.packNo++;
     const old = this.sheet;
     if (old) {
@@ -180,6 +184,7 @@ export class Playground {
   }
 
   add(src: StickerSource) {
+    this.wake();
     const st = new Sticker(src, this.maxAniso);
     this.stickers.push(st);
     this.world.scene.add(st.root);
@@ -215,6 +220,7 @@ export class Playground {
         o.s.z = o.z + dz;
         o.s.dirty = true;
       }
+      this.wake();
       if (t < 1) requestAnimationFrame(step);
       else {
         this.world.scene.remove(old.mesh);
@@ -241,6 +247,7 @@ export class Playground {
         o.s.z = o.z + dz;
         o.s.dirty = true;
       }
+      this.wake();
       if (t < 1) requestAnimationFrame(step);
     };
     step();
@@ -248,6 +255,7 @@ export class Playground {
 
   /** One sticker's corner is lifted on the opening screen, asking to be peeled. */
   setInvite(st: Sticker | null) {
+    this.wake();
     if (this.invite && this.invite !== st) this.motion.get(this.invite)!.hoverGoal = 0;
     this.invite = st;
     if (!st) return;
@@ -579,7 +587,6 @@ export class Playground {
   // ---------------------------------------------------------------- per frame
 
   update(dt: number) {
-    this.inviteClock += dt;
 
     // Camera: user tilt plus a little parallax from the pointer (or the
     // phone's gyro) so the foil always has something to play with.
@@ -653,8 +660,9 @@ export class Playground {
       // Every few seconds the corner flutters as if someone breathed on it.
       // Driven directly (not through the spring) so between flutters it is
       // perfectly still and the idle scene costs nothing to draw.
-      const period = this.inviteClock < 30 ? 5 : 12;
-      const t = this.inviteClock % period;
+      const clock = (performance.now() - this.inviteStart) / 1000;
+      const period = clock < 30 ? 5 : 12;
+      const t = clock % period;
       const flutter = t < 1 ? Math.sin(t * 15) * Math.exp(-t * 5) * 0.9 : 0;
       if (flutter === 0 && m.hover === 1) return;
       m.hover = 1 + flutter;
@@ -867,6 +875,21 @@ export class Playground {
 
   // ---------------------------------------------------------------- utilities
 
+  /** Is anything mid-gesture or mid-animation? (If not, the loop may sleep.) */
+  busy() {
+    if (this.held || this.orbitDrag || this.intro < 1) return true;
+    for (const s of this.stickers) if (s.mode !== 'stuck') return true;
+    return false;
+  }
+
+  /** Seconds until something wants to animate on its own (the invite flutter). */
+  nextWakeIn(): number | null {
+    if (!this.invite) return null;
+    const clock = (performance.now() - this.inviteStart) / 1000;
+    const period = clock < 30 ? 5 : 12;
+    return period - (clock % period);
+  }
+
   /** World position of the inviting corner (for the "peel me" note). */
   invitePoint(out: THREE.Vector3): THREE.Vector3 | null {
     const st = this.invite;
@@ -877,6 +900,7 @@ export class Playground {
 
   /** Everything off the notebook flies away, one after another. */
   peelAll() {
+    this.wake();
     const sheet = this.sheet?.name;
     const off = this.stickers.filter((s) => s.surface !== sheet && s.mode === 'stuck').sort((a, b) => b.layer - a.layer);
     off.forEach((st, i) => {
@@ -891,6 +915,7 @@ export class Playground {
         const fly = () => {
           const t = (performance.now() - start) / 1000;
           m.goal.copy(st.pivot).addScaledVector(away, 6).setY(st.pivot.y + 3 + t * 30);
+          this.wake();
           if (t > 0.9) this.remove(st);
           else requestAnimationFrame(fly);
         };
@@ -908,6 +933,7 @@ export class Playground {
    * click to stick it down. On touch screens it lands on the notebook.
    */
   give(st: Sticker) {
+    this.wake();
     const carry = this.carryHeight();
     const nb = this.world.notebookSurface;
     const touch = this.lastPointerType === 'touch' || !this.hasPointer;

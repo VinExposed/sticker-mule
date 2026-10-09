@@ -92,6 +92,9 @@ export function stickerMaterials(src: StickerSource, maxAniso: number): StickerM
     map,
     alphaTest: 0.5,
     alphaToCoverage: true,
+    // A sticker is a thin sheet: cast from both faces so only this mesh needs
+    // to be in the shadow pass (three defaults to back faces only).
+    shadowSide: THREE.DoubleSide,
     ...finishParams(src.finish),
   });
   applyFinish(front, src.finish, foilMap);

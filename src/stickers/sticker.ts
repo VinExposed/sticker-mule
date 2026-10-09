@@ -76,7 +76,8 @@ export class Sticker {
     this.front = new THREE.Mesh(geometry, this.materials.front);
     this.back = new THREE.Mesh(geometry, this.materials.back);
     for (const m of [this.front, this.back]) {
-      m.castShadow = true;
+      // Same surface: one shadow caster is enough.
+      m.castShadow = m === this.front;
       m.receiveShadow = true;
       m.userData.sticker = this;
       this.root.add(m);

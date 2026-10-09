@@ -16,7 +16,7 @@ export interface Surface {
 }
 
 const SHADOW_SPAN = 70;
-const SHADOW_MAP = 2048;
+const SHADOW_MAP = 1024;
 const SHADOW_NEAR = 30;
 const SHADOW_FAR = 110;
 
@@ -104,8 +104,12 @@ export class World {
     map.repeat.set(5, 5);
     const desk = new THREE.Mesh(
       new THREE.PlaneGeometry(260, 260),
-      new THREE.MeshStandardMaterial({ map, roughness: 0.92, metalness: 0 }),
+      // Lambert: the desk is matte anyway, and it covers most of the screen.
+      new THREE.MeshLambertMaterial({ map }),
     );
+    // Drawn last so GPUs without hidden-surface removal skip the parts under
+    // the notebook and sheet.
+    desk.renderOrder = 1;
     desk.rotation.x = -Math.PI / 2;
     desk.receiveShadow = true;
     this.scene.add(desk);
@@ -356,14 +360,15 @@ export class World {
   }
 
   /** Draw if anything changed (or always, when `force`, e.g. for a snapshot). */
-  render(force = false) {
+  render(force = false): boolean {
     if (this.shadowsDirty) {
       this.shadowsDirty = false;
       this.needsRender = true;
       this.updateShadows();
     }
-    if (!this.needsRender && !force) return;
+    if (!this.needsRender && !force) return false;
     this.needsRender = false;
     this.renderer.render(this.scene, this.camera);
+    return true;
   }
 }

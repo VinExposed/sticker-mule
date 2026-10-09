@@ -62,7 +62,19 @@ async function main() {
   // the first frames don't hitch.
   await world.renderer.compileAsync(world.scene, world.camera);
 
+  // The frame loop sleeps when nothing is moving and wakes on input, so an
+  // idle tab costs nothing — not even a requestAnimationFrame tick.
   let last = performance.now();
+  let running = false;
+  let quiet = 0;
+  let wakeTimer = 0;
+  const wake = () => {
+    quiet = 0;
+    if (running) return;
+    running = true;
+    last = performance.now();
+    requestAnimationFrame(loop);
+  };
   const loop = () => {
     const now = performance.now();
     const dt = Math.min((now - last) / 1000, 1 / 30);
@@ -70,11 +82,23 @@ async function main() {
     play.update(dt);
     world.adapt(dt);
     ui.frame();
-    world.render();
+    const drew = world.render();
+    quiet = drew || play.busy() ? 0 : quiet + 1;
+    if (quiet > 8) {
+      running = false;
+      clearTimeout(wakeTimer);
+      const t = play.nextWakeIn();
+      if (t != null) wakeTimer = window.setTimeout(wake, t * 1000);
+      return;
+    }
     requestAnimationFrame(loop);
   };
+  play.wake = wake;
+  for (const ev of ['pointermove', 'pointerdown', 'pointerup', 'pointerout', 'wheel', 'keydown', 'resize', 'deviceorientation']) {
+    window.addEventListener(ev, wake, { passive: true, capture: true });
+  }
   document.body.classList.add('ready');
-  loop();
+  wake();
 }
 
 /** Ten characters plus two bonus pulls, shuffled. */
