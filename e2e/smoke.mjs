@@ -21,14 +21,16 @@ const browser = await chromium.launch({
 });
 
 try {
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
+  // Reduced motion skips the intro shot and the idle flutter: deterministic,
+  // and quick even on CI's software-rendered GPU.
+  const page = await browser.newPage({ viewport: { width: W, height: H }, reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 
   // Wait on app state rather than wall-clock time: on a software GPU the
   // simulation can run slower than real time.
-  const until = (fn, timeout = 15_000) =>
+  const until = (fn, timeout = 60_000) =>
     page.waitForFunction(fn, null, { timeout }).then(
       () => true,
       () => false,
@@ -36,9 +38,12 @@ try {
   const toScreen = ({ x, y }) => ({ x: (x * 0.5 + 0.5) * W, y: (-y * 0.5 + 0.5) * H });
 
   await page.goto(server.resolvedUrls.local[0]);
-  await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 30_000 });
-  // Let the intro shot finish so the invite corner is where it'll stay.
-  check(await until(() => window.__peel.play.invitePoint(new window.__peel.THREE.Vector3()) !== null), 'intro never finished');
+  await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 60_000 });
+  // A few frames in, every sticker has been placed and the invite corner lifted.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300)))));
+  if (!(await until(() => window.__peel.play.invitePoint(new window.__peel.THREE.Vector3()) !== null))) {
+    throw new Error('the sheet never offered a sticker to peel');
+  }
 
   const { corner, notebook } = await page.evaluate(() => {
     const { play, world, THREE } = window.__peel;
