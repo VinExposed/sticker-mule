@@ -1,6 +1,6 @@
 # arnas. — a sticker playground
 
-**Live demo: [vinexposed.github.io/sticker-mule](https://vinexposed.github.io/sticker-mule/)** — works on desktop and phones.
+**Live demo: [prodigeris.github.io/sticker-mule](https://prodigeris.github.io/sticker-mule/)** — works on desktop and phones.
 
 A sticker playground in the browser. Open a pack, grab a corner, peel one off and slap it onto a notebook.
 
