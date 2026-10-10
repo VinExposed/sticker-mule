@@ -48,6 +48,11 @@ export class Playground {
   private sheet: Sheet | null = null;
   private packNo = 0;
   private rc = new THREE.Raycaster();
+  private plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private hit = new THREE.Vector3();
+  private tiltGoal = new THREE.Quaternion();
+  private tiltAxis = new THREE.Vector3();
+  private identity = new THREE.Quaternion();
   private ndc = new THREE.Vector2(0, 0);
   private hasPointer = false;
   private held: Sticker | null = null;
@@ -303,7 +308,8 @@ export class Playground {
     const meshes: THREE.Object3D[] = [];
     for (const s of this.stickers) {
       if (s === this.held) continue;
-      meshes.push(s.front, s.back);
+      // The raycaster doesn't skip hidden meshes on its own.
+      for (const m of [s.front, s.core, s.back]) if (m.visible) meshes.push(m);
     }
     for (const s of this.stickers) s.root.updateMatrixWorld();
     const hits = this.rc.intersectObjects(meshes, false);
@@ -319,8 +325,8 @@ export class Playground {
 
   private rayToPlane(y: number, out: THREE.Vector3) {
     this.rc.setFromCamera(this.ndc, this.world.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y);
-    return this.rc.ray.intersectPlane(plane, out);
+    this.plane.constant = -y;
+    return this.rc.ray.intersectPlane(this.plane, out);
   }
 
   /** Phones: tilt the device to catch the light on the holo foil. */
@@ -702,7 +708,7 @@ export class Playground {
     const holding = this.held === st;
     if (holding) {
       const hitY = st.baseY + Math.max(0, peelGrabZ(st, m));
-      const p = this.rayToPlane(hitY, new THREE.Vector3());
+      const p = this.rayToPlane(hitY, this.hit);
       goal = p ? st.toLocal(p.x, p.z) : m.target;
     } else {
       goal = m.grab;
@@ -766,7 +772,7 @@ export class Playground {
 
   private stepCarried(st: Sticker, m: Motion, dt: number) {
     if (this.held === st) {
-      const p = this.rayToPlane(this.carryHeight(), new THREE.Vector3());
+      const p = this.rayToPlane(this.carryHeight(), this.hit);
       if (p) m.goal.copy(p);
     }
     this.springPivot(st, m, dt, 520, 0.85);
@@ -806,8 +812,8 @@ export class Playground {
     const v = m.vel;
     const speed = Math.hypot(v.x, v.z);
     const ang = Math.min(0.32, speed * 0.0042);
-    const target = new THREE.Quaternion();
-    if (speed > 1e-3) target.setFromAxisAngle(new THREE.Vector3(v.z / speed, 0, -v.x / speed), ang);
+    const target = this.tiltGoal.identity();
+    if (speed > 1e-3) target.setFromAxisAngle(this.tiltAxis.set(v.z / speed, 0, -v.x / speed), ang);
     st.tilt.slerp(target, 1 - Math.exp(-dt * 10));
     st.dirty = true;
   }
@@ -834,7 +840,7 @@ export class Playground {
       const u = t - T1;
       st.bend = 0.42 * Math.exp(-u / 0.045) * Math.cos((u / 0.1) * Math.PI * 2);
     }
-    st.tilt.slerp(new THREE.Quaternion(), Math.min(1, dt * 25));
+    st.tilt.slerp(this.identity, Math.min(1, dt * 25));
     m.thetaVel *= 0.7;
     st.peel.theta *= Math.max(0, 1 - dt * 25);
     if (t > T1) st.peel.theta = 0;

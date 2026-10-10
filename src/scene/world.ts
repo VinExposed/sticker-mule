@@ -45,7 +45,12 @@ export class World {
   private bounds = new THREE.Box2();
 
   constructor(container: HTMLElement) {
-    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      // Let dual-GPU laptops stay on the integrated GPU: the scene is light,
+      // and the discrete one means heat and fans.
+      powerPreference: 'default',
+    });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = true;

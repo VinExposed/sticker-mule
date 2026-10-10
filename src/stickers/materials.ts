@@ -78,7 +78,13 @@ if (foil > 0.002) {
 `;
 
 export interface StickerMaterials {
-  front: THREE.MeshPhysicalMaterial;
+  front: THREE.MeshStandardMaterial;
+  /** Same look, no alpha test: for the solid interior of a resting sticker. */
+  core: THREE.MeshStandardMaterial;
+  /** Resting edge band, depth only (pre-pass). */
+  edgeDepth: THREE.MeshBasicMaterial;
+  /** Resting edge band, colour only, drawn after everything opaque. */
+  edge: THREE.MeshStandardMaterial;
   back: THREE.MeshStandardMaterial;
   dispose(): void;
 }
@@ -101,6 +107,9 @@ export function acquireMaterials(src: StickerSource, maxAniso: number): StickerM
   let released = false;
   return {
     front: e.mats.front,
+    core: e.mats.core,
+    edgeDepth: e.mats.edgeDepth,
+    edge: e.mats.edge,
     back: e.mats.back,
     dispose() {
       if (released) return;
@@ -118,7 +127,9 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
   const backMap = texture(src.back, true, maxAniso);
   const foilMap = texture(src.foil, false, maxAniso);
 
-  const front = new THREE.MeshPhysicalMaterial({
+  // Standard, not Physical: the clearcoat lobe doubled the cost of every
+  // sticker pixel, and a low-roughness dielectric reads just as glossy.
+  const front = new THREE.MeshStandardMaterial({
     map,
     alphaTest: 0.5,
     alphaToCoverage: true,
@@ -128,6 +139,28 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
     ...finishParams(src.finish),
   });
   applyFinish(front, src.finish, foilMap);
+  const core = front.clone();
+  core.alphaTest = 0;
+  core.alphaToCoverage = false;
+  applyFinish(core, src.finish, foilMap);
+
+  // The alpha-tested edge band is drawn twice: a cheap depth-only pass early
+  // on, then the full material at the very end with depth writes off. Edge
+  // pixels hidden under other stickers then fail the depth test before any
+  // lighting runs, instead of being shaded layer after layer.
+  const edgeDepth = new THREE.MeshBasicMaterial({
+    map,
+    alphaTest: 0.5,
+    alphaToCoverage: true,
+    colorWrite: false,
+    // Sit a hair behind the colour pass so it always passes LessEqual.
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 2,
+  });
+  const edge = front.clone();
+  edge.depthWrite = false;
+  applyFinish(edge, src.finish, foilMap);
 
   const back = new THREE.MeshStandardMaterial({
     map: backMap,
@@ -140,12 +173,18 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
 
   return {
     front,
+    core,
+    edgeDepth,
+    edge,
     back,
     dispose() {
       map.dispose();
       backMap.dispose();
       foilMap.dispose();
       front.dispose();
+      core.dispose();
+      edgeDepth.dispose();
+      edge.dispose();
       back.dispose();
     },
   };
@@ -154,15 +193,16 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
 function finishParams(finish: Finish) {
   switch (finish) {
     case 'matte':
-      return { roughness: 0.82, clearcoat: 0, metalness: 0 };
+      return { roughness: 0.82, metalness: 0, envMapIntensity: 1, color: new THREE.Color(1, 1, 1) };
     case 'holo':
-      return { roughness: 0.4, clearcoat: 1, clearcoatRoughness: 0.06, metalness: 0 };
+      return { roughness: 0.34, metalness: 0, envMapIntensity: 0.8, color: new THREE.Color(0.95, 0.95, 0.95) };
     default:
-      return { roughness: 0.48, clearcoat: 1, clearcoatRoughness: 0.08, metalness: 0 };
+      // The tint stands in for the light a laminate's coat takes from the print.
+      return { roughness: 0.2, metalness: 0, envMapIntensity: 0.45, color: new THREE.Color(0.95, 0.95, 0.95) };
   }
 }
 
-export function applyFinish(m: THREE.MeshPhysicalMaterial, finish: Finish, foilMap: THREE.Texture) {
+export function applyFinish(m: THREE.MeshStandardMaterial, finish: Finish, foilMap: THREE.Texture) {
   m.setValues(finishParams(finish));
   if (finish === 'holo') {
     m.onBeforeCompile = (shader) => {

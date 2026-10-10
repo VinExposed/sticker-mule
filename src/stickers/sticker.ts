@@ -3,6 +3,7 @@ import { deform, type DeformOut, type PeelState } from '../peel/model';
 import { fitsOn, wrapPoint, type Box, type Wrapped } from '../peel/wrap';
 import type { StickerSource } from './factory';
 import { acquireMaterials, type StickerMaterials } from './materials';
+import { splitGeometry, type SplitGeometry } from './split';
 
 export type StickerMode = 'stuck' | 'peeling' | 'carried' | 'dropping';
 
@@ -10,6 +11,7 @@ export type StickerMode = 'stuck' | 'peeling' | 'carried' | 'dropping';
 let nextId = 1;
 const tmp: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
 const wrapped: Wrapped = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 };
+const held: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
 const m4 = new THREE.Matrix4();
 const m4b = new THREE.Matrix4();
 const q = new THREE.Quaternion();
@@ -26,13 +28,17 @@ export class Sticker {
   readonly src: StickerSource;
   readonly root = new THREE.Group();
   readonly front: THREE.Mesh;
+  /** Opaque interior while resting (see split.ts). */
+  readonly core: THREE.Mesh;
+  /** Depth pre-pass for the resting edge band. */
+  readonly edgeDepth: THREE.Mesh;
   readonly back: THREE.Mesh;
   /**
    * Fine grid for curling/wrapping, built the first time it's needed; a plain
    * quad when lying flat (most stickers, most of the time).
    */
   private geometry: THREE.BufferGeometry | null = null;
-  private readonly quad: THREE.BufferGeometry;
+  private readonly flat: SplitGeometry;
   materials: StickerMaterials;
 
   /** Rest-pose vertex positions in sticker space (cm, y down). */
@@ -70,15 +76,16 @@ export class Sticker {
     const long = 84;
     this.cols = Math.max(12, Math.round((src.width / Math.max(src.width, src.height)) * long));
     this.rows = Math.max(12, Math.round((src.height / Math.max(src.width, src.height)) * long));
-    this.quad = grid(src.width, src.height, 1, 1).geometry;
-    this.quad.computeBoundingSphere();
+    this.flat = splitGeometry(src);
     this.materials = acquireMaterials(src, maxAniso);
-    this.front = new THREE.Mesh(this.quad, this.materials.front);
-    this.back = new THREE.Mesh(this.quad, this.materials.back);
+    this.front = new THREE.Mesh(this.flat.edge, this.materials.front);
+    this.core = new THREE.Mesh(this.flat.core, this.materials.core);
+    this.edgeDepth = new THREE.Mesh(this.flat.edge, this.materials.edgeDepth);
+    this.back = new THREE.Mesh(this.flat.edge, this.materials.back);
     this.back.visible = false;
-    for (const m of [this.front, this.back]) {
-      // Same surface: one shadow caster is enough.
-      m.castShadow = m === this.front;
+    for (const m of [this.front, this.core, this.edgeDepth, this.back]) {
+      // One shadow caster per surface.
+      m.castShadow = m === this.front || m === this.core;
       m.receiveShadow = true;
       m.userData.sticker = this;
       this.root.add(m);
@@ -118,10 +125,18 @@ export class Sticker {
       // M = T(pivot) * tilt * Ry(yaw) * T(-grab'), where grab' is the held
       // point in its current (possibly still curled) shape. Holding that point
       // fixed is what makes a just-popped flap unfold around your fingers.
-      const gd = flat ? { x: this.grab.x, y: this.grab.y, z: 0 } : deform(this.grab.x, this.grab.y, peel, { ...tmp });
+      let gx = this.grab.x;
+      let gy = this.grab.y;
+      let gz = 0;
+      if (!flat) {
+        const gd = deform(gx, gy, peel, held);
+        gx = gd.x;
+        gy = gd.y;
+        gz = gd.z;
+      }
       q.setFromAxisAngle(yAxis, this.yaw).premultiply(this.tilt);
       m4.compose(this.pivot, q, ONE);
-      m4b.makeTranslation(-gd.x, -gd.z, -gd.y);
+      m4b.makeTranslation(-gx, -gz, -gy);
       this.root.matrix.multiplyMatrices(m4, m4b);
     } else {
       q.setFromAxisAngle(yAxis, this.yaw);
@@ -131,20 +146,35 @@ export class Sticker {
     this.root.matrixWorldNeedsUpdate = true;
 
     const sup = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
-    // Lying flat with nothing to wrap: two triangles will do, and the back
-    // face can't be seen.
+    // Lying flat with nothing to wrap: the split core/edge meshes will do,
+    // and the back face can't be seen.
     const simple = !flying && flat && !sup;
+    // Draw order: edge depth, then cores (topmost first, so whatever they
+    // cover is never shaded), then the rest of the scene, then edge colour.
+    // A curling or carried sticker is a single alpha-tested mesh, drawn early.
+    const layerIdx = Math.round(this.layer / 0.006);
+    if (simple) {
+      this.edgeDepth.renderOrder = -300000 - layerIdx;
+      this.core.renderOrder = -200000 - layerIdx;
+      this.front.renderOrder = 10;
+    } else {
+      this.front.renderOrder = this.back.renderOrder = -100000;
+    }
+    const frontMat = simple ? this.materials.edge : this.materials.front;
+    if (this.front.material !== frontMat) this.front.material = frontMat;
     if (!simple && !this.geometry) {
       const g = grid(this.src.width, this.src.height, this.cols, this.rows);
       this.geometry = g.geometry;
       this.rest = g.rest;
     }
-    const geo = simple ? this.quad : this.geometry!;
+    const geo = simple ? this.flat.edge : this.geometry!;
     if (this.front.geometry !== geo) {
       this.front.geometry = geo;
       this.back.geometry = geo;
     }
     this.back.visible = !simple;
+    this.core.visible = simple;
+    this.edgeDepth.visible = simple;
     if (simple) return true;
 
     const geometry = this.geometry!;
@@ -261,7 +291,6 @@ export class Sticker {
 
   dispose() {
     this.geometry?.dispose();
-    this.quad.dispose();
     this.materials.dispose();
   }
 }

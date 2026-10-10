@@ -26,10 +26,11 @@ uniform sampler2D pcssMinMax;
 uniform vec4 pcssHeight;
 #define PCSS_BLOCKER_SAMPLES 8
 #define PCSS_FILTER_SAMPLES 16
-// A blocker must stand at least this far (cm) above the receiver. Comparing
+// A blocker must stand at least this far (cm) above the receiver (taller
+// than any realistic stack of stickers, so piles never pay for PCSS). Comparing
 // heights instead of raw depths means a flat surface lit at an angle never
 // shadows itself, however wide the search.
-#define PCSS_MIN_RISE 0.03
+#define PCSS_MIN_RISE 0.15
 float pcssIgn(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 vec2 pcssVogel(int i, int n, float phi) {
   float r = sqrt((float(i) + 0.5) / float(n));

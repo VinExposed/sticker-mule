@@ -567,6 +567,9 @@ kbd {
 /* ---------- small screens ---------- */
 
 @media (max-width: 640px) {
+  .note {
+    display: none;
+  }
   .brand {
     left: 16px;
   }
