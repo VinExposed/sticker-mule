@@ -95,6 +95,7 @@ Measured on an M4, 1920×1080 window at 1.5× (2880×1620 pixels):
 | `src/stickers/art.ts`                  | the ten characters, as SVG                                      |
 | `src/scene/*`                          | renderer, camera, desk, notebook, sheet, PCSS                   |
 | `src/loop.ts`                          | frame loop that sleeps when idle                                |
+| `src/view.ts`                          | camera: opening shot, desk tilt, pointer/gyro parallax          |
 | `src/library.ts`                       | sticker designs (built-in and user-made), built once and cached |
 | `src/composition.ts`, `src/persist.ts` | saving the desk, share links (tested)                           |
 | `src/ui.ts`                            | toolbar, sticker maker, hints                                   |

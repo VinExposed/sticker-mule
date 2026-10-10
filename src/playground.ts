@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import type { Sfx } from './audio';
-import { clamp, easeInOutCubic, lerp2, normalize2, rotateToLocal, rotateToWorld, type Vec2 } from './math';
+import { clamp, lerp2, normalize2, rotateToLocal, rotateToWorld, type Vec2 } from './math';
 import { deform, solvePeel, type DeformOut } from './peel/model';
 import { buildSheet, layoutPack, SHEET, type Slot } from './scene/sheet';
 import type { Surface, World } from './scene/world';
 import { covers, edgeInfo, extent, type StickerSource } from './stickers/factory';
 import { LAYER, Sticker } from './stickers/sticker';
+import { ViewControl } from './view';
 
 /** Per-sticker animation state that only the controller cares about. */
 interface Motion {
@@ -99,13 +100,7 @@ export class Playground {
   private clickToDrop = false;
   private hovered: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null = null;
 
-  // View.
-  private orbitDrag: { x: number; y: number; yaw: number; pitch: number } | null = null;
-  private userOrbit = { yaw: 0, pitch: 0 };
-  private intro = 0;
-  private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
-  private gyroRequested = false;
-  private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  private view: ViewControl;
 
   // The sticker with its corner up on the opening screen.
   private invite: Sticker | null = null;
@@ -124,7 +119,7 @@ export class Playground {
     readonly sfx: Sfx,
   ) {
     this.maxAniso = world.renderer.capabilities.getMaxAnisotropy();
-    if (this.reduceMotion) this.intro = 1;
+    this.view = new ViewControl(world, () => this.wake());
     const el = world.renderer.domElement;
     el.style.touchAction = 'none';
     el.addEventListener('pointerdown', this.onDown);
@@ -372,39 +367,6 @@ export class Playground {
     return this.rc.ray.intersectPlane(this.plane, out);
   }
 
-  /**
-   * Phones: tilt the device to catch the light on the holo foil. iOS only
-   * allows the permission prompt from a user activation (a touch *release*).
-   */
-  private requestGyro() {
-    if (this.gyroRequested || this.reduceMotion || !('DeviceOrientationEvent' in window)) return;
-    this.gyroRequested = true;
-    const start = () => {
-      this.gyro = { x: 0, y: 0, base: null };
-      window.addEventListener('deviceorientation', (e) => {
-        if (e.beta == null || e.gamma == null || !this.gyro) return;
-        const g = this.gyro;
-        g.base ??= { b: e.beta, g: e.gamma };
-        // Slowly re-centre so however you hold the phone becomes "level".
-        g.base.b += (e.beta - g.base.b) * 0.01;
-        g.base.g += (e.gamma - g.base.g) * 0.01;
-        // Quantised, so sensor noise doesn't keep the scene redrawing.
-        const x = Math.round(clamp((e.gamma - g.base.g) / 25, -1, 1) * 100) / 100;
-        const y = Math.round(clamp(-(e.beta - g.base.b) / 25, -1, 1) * 100) / 100;
-        if (x === g.x && y === g.y) return;
-        g.x = x;
-        g.y = y;
-        this.wake();
-      });
-    };
-    const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
-    if (typeof DOE.requestPermission === 'function') {
-      DOE.requestPermission()
-        .then((r) => r === 'granted' && start())
-        .catch(() => {});
-    } else start();
-  }
-
   /** Events from a second finger mid-gesture are ignored. */
   private isOtherPointer(e: PointerEvent) {
     return this.activePointer !== null && e.pointerId !== this.activePointer;
@@ -424,7 +386,7 @@ export class Playground {
     this.activePointer = e.pointerId;
     const hit = e.button === 0 ? this.pick() : null;
     if (!hit) {
-      this.orbitDrag = { x: e.clientX, y: e.clientY, yaw: this.userOrbit.yaw, pitch: this.userOrbit.pitch };
+      this.view.startDrag(e.clientX, e.clientY);
       this.setCursor('grabbing');
       return;
     }
@@ -471,10 +433,8 @@ export class Playground {
   private onMove = (e: PointerEvent) => {
     if (this.isOtherPointer(e)) return;
     this.setNdc(e);
-    if (this.orbitDrag) {
-      const o = this.orbitDrag;
-      this.userOrbit.yaw = clamp(o.yaw - (e.clientX - o.x) * 0.0035, -0.6, 0.6);
-      this.userOrbit.pitch = clamp(o.pitch + (e.clientY - o.y) * 0.003, -0.42, 0.22);
+    if (this.view.dragging) {
+      this.view.dragTo(e.clientX, e.clientY);
       return;
     }
     if (!this.held && e.pointerType === 'mouse') this.updateHover();
@@ -486,11 +446,11 @@ export class Playground {
     if (e.pointerType === 'touch') {
       // On touch screens only the release counts as a user activation.
       this.sfx.unlock();
-      this.requestGyro();
+      this.view.requestGyro();
     }
     this.setNdc(e);
-    if (this.orbitDrag) {
-      this.orbitDrag = null;
+    if (this.view.dragging) {
+      this.view.endDrag();
       this.setCursor('');
       return;
     }
@@ -511,8 +471,7 @@ export class Playground {
       return;
     }
     // Otherwise the wheel tilts the view.
-    this.userOrbit.pitch = clamp(this.userOrbit.pitch - e.deltaY * 0.0015, -0.42, 0.22);
-    this.userOrbit.yaw = clamp(this.userOrbit.yaw - e.deltaX * 0.0015, -0.6, 0.6);
+    this.view.nudge(e.deltaX, e.deltaY);
   };
 
   private onKey = (e: KeyboardEvent) => {
@@ -653,7 +612,7 @@ export class Playground {
   update(dt: number) {
     const now = performance.now();
     if (this.tweens.length) this.tweens = this.tweens.filter((t) => t(now));
-    this.updateView(dt);
+    this.view.update(dt, this.hasPointer ? this.ndc : null);
 
     for (const st of this.stickers) {
       const m = this.motion.get(st)!;
@@ -677,38 +636,6 @@ export class Playground {
       if (before && st.dirty && samePose(before, st.pose(this.poseB))) st.dirty = false;
       if (st.update()) this.world.shadowsDirty = true;
     }
-  }
-
-  /** Camera: intro shot, user tilt, and parallax from the pointer or gyro. */
-  private updateView(dt: number) {
-    const parallax = this.hasPointer && !this.orbitDrag && !this.reduceMotion;
-    let px = parallax ? this.ndc.x : 0;
-    let py = parallax ? this.ndc.y : 0;
-    if (this.gyro) {
-      px = this.gyro.x;
-      py = this.gyro.y;
-    }
-    // Let go of a tilt and the desk swings back, like a lazy susan.
-    if (!this.orbitDrag) {
-      const k = 1 - Math.exp(-dt * 2.2);
-      this.userOrbit.yaw -= this.userOrbit.yaw * k;
-      this.userOrbit.pitch -= this.userOrbit.pitch * k;
-      if (Math.abs(this.userOrbit.yaw) + Math.abs(this.userOrbit.pitch) < 3e-4) this.userOrbit.yaw = this.userOrbit.pitch = 0; // ~half a pixel
-    }
-    // Opening shot: start low and turned, settle into the top-down view.
-    let introYaw = 0;
-    let introPitch = 0;
-    if (this.intro < 1) {
-      this.intro = Math.min(1, this.intro + dt / 2.4);
-      const e = 1 - easeInOutCubic(this.intro);
-      introYaw = 0.5 * e;
-      introPitch = -0.5 * e;
-    }
-    const orbit = this.world.orbit;
-    orbit.tYaw = this.userOrbit.yaw - px * 0.05 + introYaw;
-    orbit.tPitch = this.userOrbit.pitch - py * 0.035 + introPitch;
-    if (this.intro < 1) this.world.kick(orbit.tYaw - orbit.yaw, orbit.tPitch - orbit.pitch);
-    this.world.tick(dt);
   }
 
   /** Hovering near an edge lifts it a little; moving away lets it settle. */
@@ -906,13 +833,13 @@ export class Playground {
 
   /** Is anything mid-gesture or mid-animation? (If not, the loop may sleep.) */
   busy() {
-    if (this.held || this.orbitDrag || this.intro < 1 || this.tweens.length) return true;
+    if (this.held || this.view.dragging || !this.view.introDone || this.tweens.length) return true;
     return this.stickers.some((s) => s.mode !== 'stuck');
   }
 
   /** Is the user dragging something right now? (Those frames get full rate.) */
   manipulating() {
-    return !!(this.held || this.orbitDrag);
+    return !!this.held || this.view.dragging;
   }
 
   /** Seconds until something wants to animate on its own (the invite flutter). */
@@ -926,7 +853,7 @@ export class Playground {
   /** World position of the inviting corner (for the "peel me" note). */
   invitePoint(out: THREE.Vector3): THREE.Vector3 | null {
     const st = this.invite;
-    if (!st || this.intro < 1) return null;
+    if (!st || !this.view.introDone) return null;
     const m = this.motion.get(st)!;
     return st.worldPoint(m.grab.x, m.grab.y, out);
   }
