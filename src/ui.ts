@@ -110,7 +110,6 @@ export function mountUi(deps: UiDeps) {
         btn.disabled = true;
         try {
           await deps.newPack();
-          await new Promise((r) => setTimeout(r, 750));
         } finally {
           btn.disabled = false;
         }
@@ -133,7 +132,7 @@ export function mountUi(deps: UiDeps) {
       case 'clear': {
         // It wipes the saved notebook too, so ask twice.
         if (!clearArmed) {
-          toast('Tap again to peel everything off');
+          toast(`${touch ? 'Tap' : 'Click'} again to peel everything off`);
           clearArmed = window.setTimeout(() => (clearArmed = 0), 2500);
           break;
         }
@@ -158,6 +157,9 @@ export function mountUi(deps: UiDeps) {
       }),
     ),
   );
+
+  // The canvas is pointer-driven; point assistive tech at the explanation.
+  deps.world.renderer.domElement.setAttribute('aria-describedby', 'about');
 
   const v = new THREE.Vector3();
   let lastNote = '';
@@ -247,17 +249,22 @@ function openMaker(deps: UiDeps) {
           <button class="text-btn" data-a="clear">Clear</button>
         </div>
       </div>
+      <p class="maker-status" role="status"></p>
       <button class="primary" data-a="make" disabled>Turn it into a sticker</button>
     </div>
   `;
   document.body.appendChild(wrap);
   const opener = document.activeElement as HTMLElement | null;
+  // Everything behind the dialog is out of reach until it closes.
+  const behind = [document.getElementById('stage')!, document.getElementById('ui')!];
+  for (const el of behind) el.inert = true;
   requestAnimationFrame(() => wrap.classList.add('open'));
 
   const cv = wrap.querySelector('canvas')!;
   const g = cv.getContext('2d')!;
   const empty = wrap.querySelector<HTMLElement>('.pad-empty')!;
   const makeBtn = wrap.querySelector<HTMLButtonElement>('[data-a="make"]')!;
+  const status = wrap.querySelector<HTMLElement>('.maker-status')!;
   let color = COLORS[0][0];
   let size = 22;
   let finish: Finish = 'gloss';
@@ -272,7 +279,10 @@ function openMaker(deps: UiDeps) {
   const close = () => {
     if (closed) return;
     closed = true;
+    for (const el of behind) el.inert = false;
     opener?.focus();
+    // Let clicks through while it fades out, so the desk works right away.
+    wrap.style.pointerEvents = 'none';
     wrap.classList.remove('open');
     setTimeout(() => wrap.remove(), 250);
     window.removeEventListener('keydown', onKey);
@@ -376,10 +386,11 @@ function openMaker(deps: UiDeps) {
       g.clearRect(0, 0, cv.width, cv.height);
       const s = Math.min(cv.width / cut.width, cv.height / cut.height) * 0.86;
       g.drawImage(cut, (cv.width - cut.width * s) / 2, (cv.height - cut.height * s) / 2, cut.width * s, cut.height * s);
+      status.textContent = '';
       setDirty(true);
     } catch {
-      empty.innerHTML = 'That one didn’t open.<br><small>Try a PNG or JPEG</small>';
-      setDirty(false);
+      status.textContent = 'That file didn’t open. Try a PNG or JPEG.';
+      setDirty(alphaBounds(cv) !== null);
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -415,7 +426,8 @@ function openMaker(deps: UiDeps) {
       deps.play.give(deps.play.add(src));
     } catch (e) {
       console.error(e);
-      makeBtn.textContent = 'Couldn’t cut that one. Try again?';
+      status.textContent = 'Couldn’t cut that one. Try again?';
+      makeBtn.textContent = 'Turn it into a sticker';
       makeBtn.disabled = false;
     }
   });

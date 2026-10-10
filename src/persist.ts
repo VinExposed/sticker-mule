@@ -1,16 +1,16 @@
+import { isFinish, type Finish } from './stickers/factory';
+
 /**
  * The saved form of a notebook, and how it travels: deflated and base64url'd
  * into the URL hash (or localStorage), with any user art riding along as a
  * small image. See composition.ts for how it maps to the desk.
  */
 
-const FINISHES = ['gloss', 'matte', 'holo'];
-
 export interface SavedSticker {
   /** design id */
   d: string;
   /** finish */
-  f: string;
+  f: Finish;
   /** notebook-local x, z (cm), yaw (rad), layer (cm) */
   x: number;
   z: number;
@@ -60,6 +60,11 @@ export async function decode(s: string): Promise<Composition | null> {
   }
 }
 
+/** Limits for what a link may ask us to build. */
+const MAX_STICKERS = 400;
+const MAX_ART = 24;
+const MAX_ART_CHARS = 300_000;
+
 /**
  * A link can contain anything, so only keep what we'd have written: known
  * finishes, finite numbers in range, plain ids, and art that is an inline
@@ -70,20 +75,24 @@ function sanitize(raw: unknown): Composition | null {
   if (!c || c.v !== 1 || !Array.isArray(c.s)) return null;
   const id = /^[a-z0-9-]{1,40}$/;
   const finite = (n: unknown, limit: number): n is number => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= limit;
-  const s = c.s.filter(
-    (t): t is SavedSticker =>
-      !!t &&
-      typeof t.d === 'string' &&
-      id.test(t.d) &&
-      FINISHES.includes(t.f) &&
-      finite(t.x, 100) &&
-      finite(t.z, 100) &&
-      finite(t.a, 100) &&
-      finite(t.l, 5),
-  );
+  const s = c.s
+    .slice(0, MAX_STICKERS)
+    .filter(
+      (t): t is SavedSticker =>
+        !!t &&
+        typeof t.d === 'string' &&
+        id.test(t.d) &&
+        isFinish(t.f) &&
+        finite(t.x, 100) &&
+        finite(t.z, 100) &&
+        finite(t.a, 100) &&
+        finite(t.l, 5) &&
+        t.l >= 0,
+    );
   const u: Record<string, string> = {};
-  for (const [k, v] of Object.entries(c.u ?? {})) {
-    if (id.test(k) && typeof v === 'string' && /^data:image\/(png|webp|jpeg);base64,[A-Za-z0-9+/=]+$/.test(v)) u[k] = v;
+  for (const [k, v] of Object.entries(c.u ?? {}).slice(0, MAX_ART)) {
+    if (id.test(k) && typeof v === 'string' && v.length <= MAX_ART_CHARS && /^data:image\/(png|webp|jpeg);base64,[A-Za-z0-9+/=]+$/.test(v))
+      u[k] = v;
   }
   return Object.keys(u).length ? { v: 1, s, u } : { v: 1, s };
 }

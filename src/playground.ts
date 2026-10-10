@@ -126,6 +126,10 @@ export class Playground {
     el.addEventListener('pointermove', this.onMove);
     el.addEventListener('pointerup', this.onUp);
     el.addEventListener('pointercancel', this.onUp);
+    // If a release is ever missed, don't let a stale pointer id lock input.
+    el.addEventListener('lostpointercapture', (e) => {
+      if (e.pointerId === this.activePointer) this.onUp(e);
+    });
     el.addEventListener('pointerleave', () => {
       this.hasPointer = false;
       this.setHover(null);
@@ -145,7 +149,7 @@ export class Playground {
     const sh = portrait ? { x: 0.6, z: 14.4, yaw: -0.05 } : { x: 9.6, z: 0.6, yaw: -0.07 };
     const sheetName = this.sheet?.name;
     // Everything that isn't on the sheet travels with the notebook.
-    this.moveSurface(this.world.notebookSurface, nb, (s) => s.surface !== sheetName);
+    this.moveSurface(this.world.notebookSurface, nb, (s) => !this.isOnSheet(s));
     this.world.setNotebookPose(nb.x, nb.z, nb.yaw);
     if (this.sheet) {
       this.moveSurface(this.sheet.surface, sh, (s) => s.surface === sheetName);
@@ -165,7 +169,7 @@ export class Playground {
     Object.assign(surf, to);
     for (const s of this.stickers) {
       if (s.mode !== 'stuck' || !owns(s)) continue;
-      const local = rotateToLocal(s.x - from.x, s.z - from.z, from.yaw, v2);
+      const local = rotateToLocal(s.x - from.x, s.z - from.z, from.yaw);
       const world = rotateToWorld(local.x, local.y, to.yaw, v2);
       s.x = to.x + world.x;
       s.z = to.z + world.y;
@@ -174,8 +178,8 @@ export class Playground {
     }
   }
 
-  /** Replace the sheet with a fresh pack. */
-  newPack(sources: StickerSource[], seed = Date.now()) {
+  /** Replace the sheet with a fresh pack. Resolves once it has slid into place. */
+  newPack(sources: StickerSource[], seed = Date.now()): Promise<void> {
     this.wake();
     this.packNo++;
     const old = this.sheet;
@@ -198,9 +202,8 @@ export class Playground {
     built.mesh.rotation.y = surface.yaw;
     this.sheet = { mesh: built.mesh, surface, name, dispose: built.dispose };
     const placed = this.placeOnSheet(slots);
-    if (old) this.slideIn(built.mesh, placed);
     if (reinvite) this.inviteOnSheet();
-    return placed;
+    return old ? this.slideIn(this.sheet, placed) : Promise.resolve();
   }
 
   private placeOnSheet(slots: Slot[]) {
@@ -248,6 +251,13 @@ export class Playground {
   }
 
   private slideAway(old: Sheet, leftovers: Sticker[]) {
+    const finish = () => {
+      this.world.scene.remove(old.mesh);
+      old.dispose();
+      for (const s of leftovers) if (this.stickers.includes(s)) this.remove(s);
+      this.world.shadowsDirty = true;
+    };
+    if (this.view.reduceMotion) return finish();
     const start = performance.now();
     const from = old.mesh.position.clone();
     const offs = leftovers.map((s) => ({ s, x: s.x, z: s.z }));
@@ -260,44 +270,57 @@ export class Playground {
       old.mesh.position.set(from.x + dir.x * d, 0, from.z + dir.z * d);
       this.world.shadowsDirty = true;
       for (const o of offs) {
+        if (o.s.mode !== 'stuck') continue; // grabbed on its way out
         o.s.x = o.x + dir.x * d;
         o.s.z = o.z + dir.z * d;
         o.s.dirty = true;
       }
       if (t < 1) return true;
-      this.world.scene.remove(old.mesh);
-      old.dispose();
-      for (const o of offs) if (this.stickers.includes(o.s)) this.remove(o.s);
+      finish();
       return false;
     });
   }
 
-  private slideIn(mesh: THREE.Mesh, stickers: Sticker[]) {
-    const start = performance.now();
-    const to = mesh.position.clone();
-    const offs = stickers.map((s) => ({ s, x: s.x, z: s.z, support: s.support }));
-    for (const o of offs) o.s.support = null;
+  /**
+   * The new sheet slides in from below. Positions are relative to the sheet's
+   * live pose every frame, so a resize mid-slide still lands correctly.
+   */
+  private slideIn(sheet: Sheet, stickers: Sticker[]) {
+    const surf = sheet.surface;
+    const offs = stickers.map((s) => ({ s, local: rotateToLocal(s.x - surf.x, s.z - surf.z, surf.yaw), yaw: s.yaw - surf.yaw }));
     const place = (t: number) => {
       const e = 1 - Math.pow(1 - t, 4);
       const dx = (1 - e) * -4;
       const dz = (1 - e) * 34;
-      mesh.position.set(to.x + dx, 0, to.z + dz);
+      sheet.mesh.position.set(surf.x + dx, 0, surf.z + dz);
+      sheet.mesh.rotation.y = surf.yaw;
       this.world.shadowsDirty = true;
       for (const o of offs) {
-        if (o.s.mode !== 'stuck') continue;
-        o.s.x = o.x + dx;
-        o.s.z = o.z + dz;
+        if (o.s.mode !== 'stuck' || o.s.surface !== sheet.name) continue;
+        const w = rotateToWorld(o.local.x, o.local.y, surf.yaw, v2);
+        o.s.x = surf.x + w.x + dx;
+        o.s.z = surf.z + w.y + dz;
+        o.s.yaw = surf.yaw + o.yaw;
+        // Off the sheet's footprint while moving: nothing to wrap around.
+        o.s.support = t < 1 ? null : surf;
         o.s.dirty = true;
       }
     };
+    if (this.view.reduceMotion) {
+      place(1);
+      return Promise.resolve();
+    }
+    const start = performance.now();
     place(0);
-    this.animate((now) => {
-      const t = Math.min(1, (now - start) / 700);
-      place(t);
-      if (t < 1) return true;
-      for (const o of offs) if (o.s.mode === 'stuck') o.s.support = o.support;
-      return false;
-    });
+    return new Promise<void>((resolve) =>
+      this.animate((now) => {
+        const t = Math.min(1, (now - start) / 700);
+        place(t);
+        if (t < 1) return true;
+        resolve();
+        return false;
+      }),
+    );
   }
 
   /** Lift a corner on the sheet's "Peel Me" sticker, asking for a first peel. */
@@ -415,7 +438,6 @@ export class Playground {
     const resume = st.mode === 'peeling' && Math.hypot(hit.x - m.grab.x, hit.y - m.grab.y) < 1;
     if (resume || edge.dist < edgeZone(st)) {
       if (!resume) {
-        st.peel.theta = 0;
         m.grab = { x: hit.x, y: hit.y };
         m.inward = { x: edge.nx, y: edge.ny };
         m.target = { x: hit.x, y: hit.y };
@@ -480,7 +502,7 @@ export class Playground {
     const step = Math.PI / 12;
     const key = e.key.toLowerCase();
     if (key === 'q' || key === 'arrowleft') this.motion.get(st)!.yawGoal += step;
-    if (key === 'e' || key === 'r' || key === 'arrowright') this.motion.get(st)!.yawGoal -= step;
+    if (key === 'e' || key === 'arrowright') this.motion.get(st)!.yawGoal -= step;
     if (key === 'escape') this.dropHeld();
   };
 
@@ -564,7 +586,7 @@ export class Playground {
    * The highest surface under a sticker's footprint is what it sticks to;
    * whatever hangs off that surface wraps over its edge.
    */
-  footprint(st: Sticker, cx: number, cz: number, { sheets = true } = {}) {
+  private footprint(st: Sticker, cx: number, cz: number, { sheets = true } = {}) {
     const pts = st.src.points;
     let best: Surface | null = null;
     const stride = Math.max(2, Math.floor(pts.length / 2 / 60) * 2);
@@ -575,6 +597,19 @@ export class Playground {
       if (!best || hit.top > best.top) best = hit;
     }
     return { top: best?.top ?? 0, surface: best };
+  }
+
+  /** Stick a sticker straight down at a saved pose (never onto a sheet). */
+  place(src: StickerSource, pose: { x: number; z: number; yaw: number; layer: number }) {
+    const st = this.add(src);
+    Object.assign(st, pose);
+    // Not onto the sheet: it isn't saved, and leaves with the next pack.
+    const { top, surface } = this.footprint(st, st.x, st.z, { sheets: false });
+    st.surface = surface?.name ?? 'desk';
+    st.support = surface;
+    st.baseY = top + st.layer;
+    st.dirty = true;
+    return st;
   }
 
   /** Stacking height for a sticker about to rest at (cx, cz) on a surface at `top`. */
@@ -609,9 +644,13 @@ export class Playground {
 
   // ---------------------------------------------------------------- per frame
 
-  update(dt: number) {
-    const now = performance.now();
-    if (this.tweens.length) this.tweens = this.tweens.filter((t) => t(now));
+  update(dt: number, now = performance.now()) {
+    if (this.tweens.length) {
+      // Swap first, so tweens started by a tween this frame aren't lost.
+      const running = this.tweens;
+      this.tweens = [];
+      this.tweens.push(...running.filter((t) => t(now)));
+    }
     this.view.update(dt, this.hasPointer ? this.ndc : null);
 
     for (const st of this.stickers) {
@@ -650,7 +689,7 @@ export class Playground {
     } else {
       // Driven directly (not through the spring) so between flutters it is
       // perfectly still and the idle scene costs nothing to draw.
-      const flutter = inviteFlutter(this.inviteClock());
+      const flutter = this.view.reduceMotion ? 0 : inviteFlutter(this.inviteClock());
       if (flutter === 0 && m.hover === 1) return;
       m.hover = 1 + flutter;
       m.hoverVel = 0;
@@ -729,7 +768,7 @@ export class Playground {
   }
 
   private stepCarried(st: Sticker, m: Motion, dt: number) {
-    if (this.held === st) {
+    if (this.held === st && this.hasPointer) {
       const p = this.rayToPlane(this.carryHeight(), this.hit);
       if (p) m.goal.copy(p);
     }
@@ -788,7 +827,7 @@ export class Playground {
         const speed = (m.dropFrom - st.baseY) / DROP_FALL;
         this.sfx.slap(0.4 + speed / 40);
         // A tiny camera kick sells the impact.
-        this.world.kick(0, -0.004);
+        if (!this.view.reduceMotion) this.world.kick(0, -0.004);
         navigator.vibrate?.(12);
       }
       const u = t - DROP_FALL;
@@ -844,7 +883,7 @@ export class Playground {
 
   /** Seconds until something wants to animate on its own (the invite flutter). */
   nextWakeIn(): number | null {
-    if (!this.invite) return null;
+    if (!this.invite || this.view.reduceMotion) return null;
     const t = this.inviteClock();
     const period = flutterPeriod(t);
     return period - (t % period);
@@ -912,8 +951,10 @@ export class Playground {
     this.dropHeld();
     const carry = this.carryHeight();
     const nb = this.world.notebookSurface;
-    const touch = this.lastPointerType === 'touch' || !this.hasPointer;
-    const at = (!touch && this.rayToPlane(carry, new THREE.Vector3())) || new THREE.Vector3(nb.x, carry, nb.z);
+    // The mouse is usually over the dock or the maker when this runs, so
+    // start above the notebook; it follows once the pointer is back.
+    const touch = this.lastPointerType === 'touch' || !matchMedia('(pointer: fine)').matches;
+    const at = (this.hasPointer && !touch && this.rayToPlane(carry, new THREE.Vector3())) || new THREE.Vector3(nb.x, carry, nb.z);
     const m = this.motion.get(st)!;
     st.yaw = nb.yaw + (Math.random() - 0.5) * 0.3;
     st.mode = 'carried';

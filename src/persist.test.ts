@@ -37,6 +37,7 @@ describe('persist', () => {
         { d: '../x:y', f: 'gloss', x: 1, z: 2, a: 0, l: 0.006 },
         { d: 'mule', f: 'gloss', x: null, z: 2, a: 0, l: 0.006 },
         { d: 'mule', f: 'gloss', x: 1e9, z: 2, a: 0, l: 0.006 },
+        { d: 'mule', f: 'gloss', x: 1, z: 2, a: 0, l: -1 },
       ],
       u: { 'u-1': 'https://tracker.example/pixel.png', 'u-2': 'data:image/webp;base64,AAAA' },
     };

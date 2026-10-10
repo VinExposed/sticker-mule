@@ -26,9 +26,10 @@ async function main() {
 
   // Restore a shared link, or the last session. A link is consumed once:
   // after that, autosave owns the notebook and a reload shouldn't revert it.
-  const fromHash = location.hash.startsWith('#c=') ? location.hash.slice(3) : null;
-  if (fromHash) history.replaceState(null, '', location.pathname + location.search);
-  const saved = await decode(fromHash ?? loadLocal() ?? '');
+  const link = location.hash.startsWith('#c=') ? await decode(location.hash.slice(3)) : null;
+  dropLinkFromUrl();
+  if (link) saveLocal(await encode(link));
+  const saved = link ?? (await decode(loadLocal() ?? ''));
   const restored = saved ? await restore(play, lib, saved) : 0;
   // The opening shot: one corner, begging.
   if (!restored) play.inviteOnSheet();
@@ -39,9 +40,8 @@ async function main() {
     lib,
     play,
     world,
-    newPack: async () => {
-      play.newPack(await makePack(lib, packSeed++));
-    },
+    // Resolves once the new sheet has slid into place.
+    newPack: async () => play.newPack(await makePack(lib, packSeed++)),
     serialize: () => serialize(play, lib),
   });
   play.onFirstPeel = () => ui.firstPeel();
@@ -53,6 +53,8 @@ async function main() {
   let saveSeq = 0;
   play.onChange = () => {
     clearTimeout(saveTimer);
+    // Anything shared via the address bar is now out of date.
+    dropLinkFromUrl();
     saveTimer = window.setTimeout(async () => {
       const seq = ++saveSeq;
       const encoded = await encode(serialize(play, lib));
@@ -71,8 +73,8 @@ async function main() {
 
   let lastDraw = 0;
   play.wake = startLoop({
-    update(dt) {
-      play.update(dt);
+    update(dt, now) {
+      play.update(dt, now);
       world.adapt(dt);
       ui.frame();
     },
@@ -110,6 +112,10 @@ function shuffle<T>(a: T[], seed: number) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+function dropLinkFromUrl() {
+  if (location.hash.startsWith('#c=')) history.replaceState(null, '', location.pathname + location.search);
 }
 
 function showFatal(message: string, detail = '') {

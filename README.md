@@ -8,6 +8,7 @@ A sticker playground in the browser. Open a pack, grab a corner, peel one off an
 npm install
 npm run dev     # http://localhost:4791
 npm run check   # type-check, formatting, unit tests
+npm run e2e     # browser smoke test: peel, carry, drop, make your own
 npm run build   # static site in dist/
 ```
 

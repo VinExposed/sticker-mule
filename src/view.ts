@@ -73,10 +73,11 @@ export class ViewControl {
         // Slowly re-centre so however you hold the phone becomes "level".
         g.base.b += (e.beta - g.base.b) * 0.01;
         g.base.g += (e.gamma - g.base.g) * 0.01;
-        // Quantised, so sensor noise doesn't keep the scene redrawing.
-        const x = Math.round(clamp((e.gamma - g.base.g) / 25, -1, 1) * 100) / 100;
-        const y = Math.round(clamp(-(e.beta - g.base.b) / 25, -1, 1) * 100) / 100;
-        if (x === g.x && y === g.y) return;
+        // Ignore changes smaller than sensor noise, so a phone lying still
+        // doesn't keep the scene redrawing.
+        const x = clamp((e.gamma - g.base.g) / 25, -1, 1);
+        const y = clamp(-(e.beta - g.base.b) / 25, -1, 1);
+        if (Math.abs(x - g.x) < 0.02 && Math.abs(y - g.y) < 0.02) return;
         g.x = x;
         g.y = y;
         this.wake();

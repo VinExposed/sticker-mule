@@ -95,12 +95,6 @@ export class Sticker {
     this.root.matrixAutoUpdate = false;
   }
 
-  /** World XZ of a sticker-space point when lying flat. */
-  toWorld(px: number, py: number, out = new THREE.Vector2()) {
-    rotateToWorld(px, py, this.yaw, offset);
-    return out.set(this.x + offset.x, this.z + offset.y);
-  }
-
   /** Sticker-space point under a world XZ position (when lying flat). */
   toLocal(wx: number, wz: number, out = new THREE.Vector2()) {
     rotateToLocal(wx - this.x, wz - this.z, this.yaw, offset);

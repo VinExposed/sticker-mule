@@ -5,7 +5,9 @@
  * sticker wants to peel.
  */
 
-export type Finish = 'gloss' | 'matte' | 'holo';
+export const FINISHES = ['gloss', 'matte', 'holo'] as const;
+export type Finish = (typeof FINISHES)[number];
+export const isFinish = (f: unknown): f is Finish => FINISHES.includes(f as Finish);
 
 export interface StickerSource {
   key: string;
