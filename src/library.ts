@@ -78,7 +78,7 @@ export class Library {
 /** Slight size variety, like a real pack. */
 function sizeFor(id: string) {
   switch (id) {
-    case 'peel-me':
+    case 'hire-me':
       return 3.5;
     case 'bolt':
     case 'cactus':

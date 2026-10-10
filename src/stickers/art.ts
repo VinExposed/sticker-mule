@@ -604,7 +604,7 @@ function cactus(): string {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Peel Me badge (holo)
+// 10. Hire Me badge (holo)
 // ---------------------------------------------------------------------------
 
 function letters(): string {
@@ -614,13 +614,16 @@ function letters(): string {
     `M${x} ${y + h}L${x} ${y}L${x + w * 0.5} ${y}Q${x + w} ${y} ${x + w} ${y + h * 0.27}Q${x + w} ${y + h * 0.54} ${x + w * 0.5} ${y + h * 0.54}L${x} ${y + h * 0.54}`;
   const E = (x: number, y: number, w: number) =>
     `M${x + w} ${y}L${x} ${y}L${x} ${y + h}L${x + w} ${y + h}M${x} ${y + h / 2}L${x + w * 0.8} ${y + h / 2}`;
-  const L = (x: number, y: number, w: number) => `M${x} ${y}L${x} ${y + h}L${x + w} ${y + h}`;
+  const H = (x: number, y: number, w: number) =>
+    `M${x} ${y}L${x} ${y + h}M${x + w} ${y}L${x + w} ${y + h}M${x} ${y + h / 2}L${x + w} ${y + h / 2}`;
+  const I = (x: number, y: number) => `M${x} ${y}L${x} ${y + h}`;
+  const R = (x: number, y: number, w: number) => P(x, y, w) + `M${x + w * 0.45} ${y + h * 0.54}L${x + w} ${y + h}`;
   const M = (x: number, y: number, w: number) => `M${x} ${y + h}L${x} ${y}L${x + w / 2} ${y + h * 0.58}L${x + w} ${y}L${x + w} ${y + h}`;
   const bang = (x: number, y: number) => `M${x} ${y}L${x} ${y + h * 0.56}M${x} ${y + h}L${x} ${y + h}`;
 
   const y1 = 156;
   const y2 = 280;
-  return P(116, y1, 46) + E(196, y1, 42) + E(272, y1, 42) + L(348, y1, 44) + M(172, y2, 76) + E(282, y2, 42) + bang(356, y2);
+  return H(138, y1, 46) + I(218, y1) + R(252, y1, 46) + E(332, y1, 42) + M(172, y2, 76) + E(282, y2, 42) + bang(356, y2);
 }
 
 const BURST = roundPoly(
@@ -669,5 +672,5 @@ export const STICKER_ART: StickerArt[] = [
   { id: 'star', name: 'Stella', svg: star(), finish: 'holo', foil: starFoil() },
   { id: 'melt', name: 'Drippy', svg: melt(), finish: 'matte' },
   { id: 'cactus', name: 'Spike', svg: cactus(), finish: 'matte' },
-  { id: 'peel-me', name: 'Peel Me', svg: badge(), finish: 'holo', foil: badgeFoil() },
+  { id: 'hire-me', name: 'Hire Me', svg: badge(), finish: 'holo', foil: badgeFoil() },
 ];

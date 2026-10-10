@@ -323,10 +323,10 @@ export class Playground {
     );
   }
 
-  /** Lift a corner on the sheet's "Peel Me" sticker, asking for a first peel. */
+  /** Lift a corner on the sheet's "Hire Me" sticker, asking for a first peel. */
   inviteOnSheet() {
     const onSheet = this.stickers.filter((s) => s.surface === this.sheetName);
-    const st = onSheet.find((s) => s.src.key.startsWith('peel-me:')) ?? onSheet[0];
+    const st = onSheet.find((s) => s.src.key.startsWith('hire-me:')) ?? onSheet[0];
     if (st) this.setInvite(st);
   }
 

@@ -93,7 +93,7 @@ const shared = new WeakMap<StickerSource, { mats: StickerMaterials; users: numbe
 
 /**
  * Materials (and their textures) are shared by every sticker cut from the
- * same design, so a second "Peel Me" costs no extra texture memory or upload.
+ * same design, so a second "Hire Me" costs no extra texture memory or upload.
  * Released when the last user goes away.
  */
 export function acquireMaterials(src: StickerSource, maxAniso: number): StickerMaterials {
