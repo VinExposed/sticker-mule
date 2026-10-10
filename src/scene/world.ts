@@ -288,13 +288,18 @@ export class World {
 
   tick(dt: number) {
     const k = 1 - Math.exp(-dt * 6);
-    const dy = (this.orbit.tYaw - this.orbit.yaw) * k;
-    const dp = (this.orbit.tPitch - this.orbit.pitch) * k;
-    // Once the camera has settled there's nothing new to draw.
-    if (Math.abs(dy) + Math.abs(dp) < 2e-6 && !this.cameraMoved) return;
+    const ey = this.orbit.tYaw - this.orbit.yaw;
+    const ep = this.orbit.tPitch - this.orbit.pitch;
+    if (Math.abs(ey) + Math.abs(ep) < 5e-5) {
+      // Within a fraction of a pixel: land exactly, draw once, then stop.
+      if (ey === 0 && ep === 0 && !this.cameraMoved) return;
+      this.orbit.yaw = this.orbit.tYaw;
+      this.orbit.pitch = this.orbit.tPitch;
+    } else {
+      this.orbit.yaw += ey * k;
+      this.orbit.pitch += ep * k;
+    }
     this.cameraMoved = false;
-    this.orbit.yaw += dy;
-    this.orbit.pitch += dp;
     this.updateCamera();
     this.needsRender = true;
   }

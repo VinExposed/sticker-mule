@@ -611,6 +611,7 @@ export class Playground {
       const k = 1 - Math.exp(-dt * 2.2);
       this.userOrbit.yaw -= this.userOrbit.yaw * k;
       this.userOrbit.pitch -= this.userOrbit.pitch * k;
+      if (Math.abs(this.userOrbit.yaw) + Math.abs(this.userOrbit.pitch) < 5e-5) this.userOrbit.yaw = this.userOrbit.pitch = 0;
     }
     // Opening shot: start low and turned, settle into the top-down view.
     let introYaw = 0;
