@@ -1,6 +1,6 @@
 # arnas. — a sticker playground
 
-**Live demo: [arn.as/sticker-mule](https://arn.as/sticker-mule/)** — works on desktop and phones.
+**Live demo: [arn.as/stickers](https://arn.as/stickers/)** — works on desktop and phones.
 
 A sticker playground in the browser. Open a pack, grab a corner, peel one off and slap it onto a notebook.
 
