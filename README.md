@@ -1,8 +1,8 @@
-# Peel
+# arnas. — a sticker playground
 
 A sticker playground in the browser. Open a pack, grab a corner, peel one off and slap it onto a notebook.
 
-![Peel: a notebook with stickers and a half-used sticker sheet](docs/hero.jpg)
+![A notebook with stickers and a half-used sticker sheet](docs/hero.jpg)
 
 ```sh
 npm install

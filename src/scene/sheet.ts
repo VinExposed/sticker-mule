@@ -3,6 +3,8 @@ import { canvas, grain, type StickerSource } from '../stickers/factory';
 import { rng } from './textures';
 
 export const SHEET = { w: 13.4, d: 18.6, t: 0.035 };
+/** The wordmark printed on every sheet. */
+const BRAND = 'arnas';
 const PX = 90; // texture pixels per cm
 
 export interface Slot {
@@ -55,8 +57,8 @@ export function buildSheet(slots: Slot[], packNo: number) {
   g.fillStyle = ink;
   g.font = `900 ${0.95 * PX}px "Arial Black", "Helvetica Neue", Arial, sans-serif`;
   g.textBaseline = 'alphabetic';
-  g.fillText('peel', 0.7 * PX, 1.55 * PX);
-  const pw = g.measureText('peel').width;
+  g.fillText(BRAND, 0.7 * PX, 1.55 * PX);
+  const pw = g.measureText(BRAND).width;
   g.fillStyle = '#ff5a1f';
   g.beginPath();
   g.arc(0.7 * PX + pw + 0.2 * PX, 1.45 * PX, 0.13 * PX, 0, Math.PI * 2);

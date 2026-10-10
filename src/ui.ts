@@ -33,7 +33,7 @@ export function mountUi(deps: UiDeps) {
   const root = document.getElementById('ui')!;
   root.innerHTML = `
     <header class="brand">
-      <div class="logo"><span>peel</span><i></i></div>
+      <div class="logo"><span>arnas</span><i></i></div>
       <p>a ridiculously satisfying sticker playground</p>
     </header>
     <div class="corner">
@@ -202,7 +202,7 @@ function saveImage(world: World, ui: HTMLElement) {
     if (!blob) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'peel-notebook.png';
+    a.download = 'arnas-notebook.png';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }, 'image/png');

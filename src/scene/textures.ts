@@ -125,12 +125,12 @@ export function pageEdgeTexture() {
 export function stampTexture() {
   const c = canvas(680, 240);
   const g = c.getContext('2d')!;
-  g.font = '900 150px "Arial Black", "Helvetica Neue", Arial, sans-serif';
+  g.font = '900 132px "Arial Black", "Helvetica Neue", Arial, sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  const w = g.measureText('peel').width;
+  const w = g.measureText('arnas').width;
   g.fillStyle = '#36343c';
-  g.fillText('peel', 340 - 22, 118);
+  g.fillText('arnas', 340 - 22, 118);
   g.beginPath();
   g.arc(340 - 22 + w / 2 + 34, 160, 20, 0, Math.PI * 2);
   g.fill();
