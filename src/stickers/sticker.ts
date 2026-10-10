@@ -123,79 +123,82 @@ export class Sticker {
     return Math.abs(this.peel.theta) <= 1e-4 || this.peel.f < -1e8;
   }
 
-  /** Recompute the transform and the deformed vertices. */
+  /** Recompute the transform and, if it isn't lying flat, the vertices. */
   update(): boolean {
     if (!this.dirty) return false;
     this.dirty = false;
     const flying = this.mode === 'carried' || this.mode === 'dropping';
-    const peel = this.peel;
-    const flat = this.isFlat;
+    this.placeRoot(flying);
+    // Hanging over the edge of what it's stuck to?
+    const wrap = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
+    // Lying flat with nothing to wrap: the static core/edge meshes will do.
+    const resting = !flying && this.isFlat && !wrap;
+    this.useMeshes(resting);
+    if (!resting) this.deformGrid(flying, wrap);
+    return true;
+  }
 
+  private placeRoot(flying: boolean) {
     if (flying) {
       // M = T(pivot) * tilt * Ry(yaw) * T(-grab'), where grab' is the held
       // point in its current (possibly still curled) shape. Holding that point
       // fixed is what makes a just-popped flap unfold around your fingers.
-      let gx = this.grab.x;
-      let gy = this.grab.y;
-      let gz = 0;
-      if (!flat) {
-        const gd = deform(gx, gy, peel, scratchPoint);
-        gx = gd.x;
-        gy = gd.y;
-        gz = gd.z;
-      }
+      const g = this.isFlat
+        ? Object.assign(scratchPoint, { x: this.grab.x, y: this.grab.y, z: 0 })
+        : deform(this.grab.x, this.grab.y, this.peel, scratchPoint);
       q.setFromAxisAngle(yAxis, this.yaw).premultiply(this.tilt);
       m4.compose(this.pivot, q, ONE);
-      m4b.makeTranslation(-gx, -gz, -gy);
+      m4b.makeTranslation(-g.x, -g.z, -g.y);
       this.root.matrix.multiplyMatrices(m4, m4b);
     } else {
       q.setFromAxisAngle(yAxis, this.yaw);
-      m4.compose(v3.set(this.x, this.baseY, this.z), q, ONE);
-      this.root.matrix.copy(m4);
+      this.root.matrix.compose(v3.set(this.x, this.baseY, this.z), q, ONE);
     }
     this.root.matrixWorldNeedsUpdate = true;
+  }
 
-    const sup = !flying && this.support && !fitsOn(this.support, this.x, this.z, this.radius()) ? this.support : null;
-    // Lying flat with nothing to wrap: the split core/edge meshes will do,
-    // and the back face can't be seen.
-    const simple = !flying && flat && !sup;
-    // Draw order: edge depth, then cores (topmost first, so whatever they
-    // cover is never shaded), then the rest of the scene, then edge colour.
-    // A curling or carried sticker is a single alpha-tested mesh, drawn early.
-    const layerIdx = Math.round((this.layer * 2) / LAYER);
-    if (simple) {
+  /**
+   * Resting: static core + edge meshes. Otherwise: the deformable grid, front
+   * and back. Draw order: edge depth, then cores (topmost first, so whatever
+   * they cover is never shaded), then the rest of the scene, then edge
+   * colour. A curling or flying sticker is one alpha-tested mesh, drawn early.
+   */
+  private useMeshes(resting: boolean) {
+    if (resting) {
+      const layerIdx = Math.round((this.layer * 2) / LAYER);
       this.edgeDepth.renderOrder = -300000 - layerIdx;
       this.core.renderOrder = -200000 - layerIdx;
       this.front.renderOrder = 10;
     } else {
       this.front.renderOrder = this.back.renderOrder = -100000;
+      if (!this.geometry) {
+        const g = grid(this.src.width, this.src.height, this.cols, this.rows);
+        this.geometry = g.geometry;
+        this.rest = g.rest;
+      }
     }
-    const frontMat = simple ? this.materials.edge : this.materials.front;
-    if (this.front.material !== frontMat) this.front.material = frontMat;
-    if (!simple && !this.geometry) {
-      const g = grid(this.src.width, this.src.height, this.cols, this.rows);
-      this.geometry = g.geometry;
-      this.rest = g.rest;
-    }
-    const geo = simple ? this.flat.edge : this.geometry!;
-    if (this.front.geometry !== geo) {
-      this.front.geometry = geo;
-      this.back.geometry = geo;
-    }
-    this.back.visible = !simple;
-    this.core.visible = simple;
-    this.edgeDepth.visible = simple;
-    if (simple) return true;
+    const material = resting ? this.materials.edge : this.materials.front;
+    const geometry = resting ? this.flat.edge : this.geometry!;
+    if (this.front.material !== material) this.front.material = material;
+    if (this.front.geometry !== geometry) this.front.geometry = this.back.geometry = geometry;
+    this.back.visible = !resting;
+    this.core.visible = resting;
+    this.edgeDepth.visible = resting;
+  }
 
+  /** Write the grid's vertices and normals for the current peel, bend and wrap. */
+  private deformGrid(flying: boolean, wrap: Box | null) {
     const geometry = this.geometry!;
     const pos = geometry.attributes.position.array as Float32Array;
     const nor = geometry.attributes.normal.array as Float32Array;
     const rest = this.rest!;
+    const peel = this.peel;
+    const flat = this.isFlat;
     const n = rest.length / 2;
     const c = Math.cos(this.yaw);
     const s = Math.sin(this.yaw);
-    const sc = sup ? Math.cos(sup.yaw) : 1;
-    const ss = sup ? Math.sin(sup.yaw) : 0;
+    const wc = wrap ? Math.cos(wrap.yaw) : 1;
+    const ws = wrap ? Math.sin(wrap.yaw) : 0;
     const gx = this.grab.x;
     const gy = this.grab.y;
     const k = flying ? this.bend / (this.bendReach * this.bendReach) : 0;
@@ -235,7 +238,7 @@ export class Sticker {
           ny *= l;
           nz *= l;
         }
-      } else if (sup && d.z < 1e-5 && wrapPoint(sup, this.x + c * d.x + s * d.y, this.z - s * d.x + c * d.y, wrapped, sc, ss)) {
+      } else if (wrap && d.z < 1e-5 && wrapPoint(wrap, this.x + c * d.x + s * d.y, this.z - s * d.x + c * d.y, wrapped, wc, ws)) {
         // Hanging past the edge: fold over it, down the side, onto the desk.
         const L = this.layer;
         const ox = wrapped.x + wrapped.nx * L - this.x;
@@ -263,7 +266,6 @@ export class Sticker {
     const bs = (geometry.boundingSphere ??= new THREE.Sphere());
     bs.center.set(pos[mid], pos[mid + 1], pos[mid + 2]);
     bs.radius = this.radius() * 1.08 + Math.abs(this.bend);
-    return true;
   }
 
   /** Everything that affects the mesh, packed for cheap "did it move?" checks. */
