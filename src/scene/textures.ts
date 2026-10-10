@@ -23,7 +23,7 @@ export function canvasTexture(c: HTMLCanvasElement, srgb: boolean, repeat = 1) {
 }
 
 /** Soft desk mat: warm, very fine grain with a few long fibres. */
-export function deskTextures() {
+export function deskTexture() {
   const size = 1024;
   const r = rng(7);
   const color = canvas(size, size);
@@ -42,12 +42,13 @@ export function deskTextures() {
     grad.addColorStop(0, tone);
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = grad;
-    for (const ox of [-size, 0, size]) for (const oy of [-size, 0, size]) {
-      g.save();
-      g.translate(ox, oy);
-      g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-      g.restore();
-    }
+    for (const ox of [-size, 0, size])
+      for (const oy of [-size, 0, size]) {
+        g.save();
+        g.translate(ox, oy);
+        g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+        g.restore();
+      }
   }
   // Fibres.
   g.lineCap = 'round';
@@ -63,7 +64,7 @@ export function deskTextures() {
     g.quadraticCurveTo(x + Math.cos(a + 0.5) * len * 0.5, y + Math.sin(a + 0.5) * len * 0.5, x + Math.cos(a) * len, y + Math.sin(a) * len);
     g.stroke();
   }
-  return { map: canvasTexture(color, true, 1) };
+  return canvasTexture(color, true, 1);
 }
 
 /** Bookcloth: near-black with soft mottling and a faint woven grain. */
@@ -84,12 +85,13 @@ export function clothTexture() {
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = grad;
     // Draw wrapped so the texture tiles without seams.
-    for (const ox of [-size, 0, size]) for (const oy of [-size, 0, size]) {
-      g.save();
-      g.translate(ox, oy);
-      g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-      g.restore();
-    }
+    for (const ox of [-size, 0, size])
+      for (const oy of [-size, 0, size]) {
+        g.save();
+        g.translate(ox, oy);
+        g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+        g.restore();
+      }
   }
   // Threads: short, slightly irregular strokes in two directions.
   for (let i = 0; i < 9000; i++) {

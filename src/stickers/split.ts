@@ -10,8 +10,8 @@ import type { StickerSource } from './factory';
  * - edge: the thin band of cells the die line passes through. Alpha-tested
  *   with alpha-to-coverage for a smooth edge.
  *
- * With dozens of overlapping stickers this is the difference between shading
- * every layer and shading roughly one.
+ * In a pile of overlapping stickers, the hidden interiors are never shaded.
+ * Geometry depends only on the design, so it's built once and shared.
  */
 export interface SplitGeometry {
   core: THREE.BufferGeometry;

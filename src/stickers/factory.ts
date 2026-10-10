@@ -18,7 +18,10 @@ export interface StickerSource {
   /** Physical size in cm. */
   width: number;
   height: number;
-  /** Coarse coverage grid (row-major, `mw` x `mh`), 1 = sticker. */
+  /**
+   * Coarse coverage grid (row-major, `mw` x `mh`), 1 = sticker. Used for hit
+   * tests, edge distance and the resting core/edge split.
+   */
   mask: Uint8Array;
   mw: number;
   mh: number;
@@ -26,8 +29,6 @@ export interface StickerSource {
   dist: Float32Array;
   /** Centres of covered mask cells in local cm, packed [x0,y0,x1,y1,...]. */
   points: Float32Array;
-  /** Original art bitmap (for persistence of user stickers). */
-  art?: HTMLCanvasElement;
 }
 
 const RES = 768;
@@ -158,7 +159,6 @@ export interface BuildOptions {
   foilArt?: HTMLCanvasElement | null;
   /** Longest side of the finished sticker in cm. */
   size?: number;
-  keepArt?: boolean;
 }
 
 export function buildSticker(o: BuildOptions): StickerSource {
@@ -213,7 +213,7 @@ export function buildSticker(o: BuildOptions): StickerSource {
   }
 
   const longest = Math.max(front.width, front.height);
-  const size = o.size ?? 5.6;
+  const size = o.size ?? 3.6;
   const width = (front.width / longest) * size;
   const height = (front.height / longest) * size;
 
@@ -228,7 +228,6 @@ export function buildSticker(o: BuildOptions): StickerSource {
     width,
     height,
     ...m,
-    art: o.keepArt ? o.art : undefined,
   };
 }
 

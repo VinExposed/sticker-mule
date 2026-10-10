@@ -202,7 +202,7 @@ function finishParams(finish: Finish) {
   }
 }
 
-export function applyFinish(m: THREE.MeshStandardMaterial, finish: Finish, foilMap: THREE.Texture) {
+function applyFinish(m: THREE.MeshStandardMaterial, finish: Finish, foilMap: THREE.Texture) {
   m.setValues(finishParams(finish));
   if (finish === 'holo') {
     m.onBeforeCompile = (shader) => {

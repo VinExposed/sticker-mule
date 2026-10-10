@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { installPcss, PcssMinMax, pcssSearchUv } from './pcss';
-import { canvasTexture, clothTexture, deskTextures, pageEdgeTexture, stampTexture } from './textures';
+import { canvasTexture, clothTexture, deskTexture, pageEdgeTexture, stampTexture } from './textures';
 
 /** A flat area stickers can stick to. Rectangle in its own frame. */
 export interface Surface {
@@ -22,7 +22,8 @@ const LIGHT_SIZE = 0.2;
 const SHADOW_NEAR = 30;
 const SHADOW_FAR = 110;
 
-export const NOTEBOOK = { w: 15.2, d: 21, t: 1.15 };
+/** Hardcover A5-ish notebook, cm. */
+const NOTEBOOK = { w: 15.2, d: 21, t: 1.15 };
 
 export class World {
   readonly renderer: THREE.WebGLRenderer;
@@ -37,12 +38,26 @@ export class World {
   private readonly offscreen = new THREE.WebGLRenderTarget(1, 1);
   private readonly nowhere = new THREE.PerspectiveCamera(1, 1, 0.1, 0.2);
 
+  /** Orbit offsets (radians) from the top-down view, and where they're easing to. */
+  readonly orbit = { yaw: 0, pitch: 0, tYaw: 0, tPitch: 0 };
+  /** Set when anything that casts a shadow moved this frame. */
+  shadowsDirty = true;
+  /** Set when anything on screen changed. Idle frames draw nothing. */
+  needsRender = true;
+
   /** Where the camera looks and how far it sits. */
   private target = new THREE.Vector3();
   private distance = 60;
-  /** Orbit offsets (radians): user tilt + pointer parallax, smoothed. */
-  orbit = { yaw: 0, pitch: 0, tYaw: 0, tPitch: 0 };
   private bounds = new THREE.Box2();
+  /** The orbit was nudged directly (intro, slap kick): redraw even if settled. */
+  private cameraMoved = false;
+
+  // Adaptive resolution.
+  private maxRatio = Math.min(window.devicePixelRatio, 1.5);
+  private pixelRatio = this.maxRatio;
+  private slowFrames = 0;
+  private fastFrames = 0;
+  private lastRendered = false;
 
   constructor(container: HTMLElement) {
     const renderer = new THREE.WebGLRenderer({
@@ -51,7 +66,7 @@ export class World {
       // and the discrete one means heat and fans.
       powerPreference: 'default',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(this.pixelRatio);
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = true;
     // Shadows are only re-rendered when something actually moved.
@@ -107,7 +122,7 @@ export class World {
   }
 
   private buildDesk() {
-    const { map } = deskTextures();
+    const map = deskTexture();
     map.repeat.set(5, 5);
     const desk = new THREE.Mesh(
       new THREE.PlaneGeometry(260, 260),
@@ -222,10 +237,7 @@ export class World {
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
-    return new THREE.Mesh(
-      g,
-      new THREE.MeshStandardMaterial({ color: '#ff5a1f', roughness: 0.42, side: THREE.DoubleSide }),
-    );
+    return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: '#ff5a1f', roughness: 0.42, side: THREE.DoubleSide }));
   }
 
   surfaceAt(x: number, z: number): Surface | null {
@@ -248,7 +260,8 @@ export class World {
     Object.assign(this.notebookSurface, { x, z, yaw });
   }
 
-  frame(min: THREE.Vector2, max: THREE.Vector2) {
+  /** Fit the camera to a region of the desk (world XZ). */
+  fitView(min: THREE.Vector2, max: THREE.Vector2) {
     this.bounds.set(min, max);
     this.resize();
   }
@@ -304,22 +317,12 @@ export class World {
     this.needsRender = true;
   }
 
-  /** Something nudged the orbit directly (e.g. the slap kick). */
-  private cameraMoved = false;
-  kick(pitch: number) {
+  /** Nudge the camera directly, bypassing the easing (intro, slap kick). */
+  kick(yaw: number, pitch: number) {
+    this.orbit.yaw += yaw;
     this.orbit.pitch += pitch;
     this.cameraMoved = true;
   }
-
-  /** Set when anything that casts a shadow moved this frame. */
-  shadowsDirty = true;
-  /** Set when anything on screen changed. Idle frames draw nothing. */
-  needsRender = true;
-  private slowFrames = 0;
-  private fastFrames = 0;
-  private lastRendered = false;
-  private maxRatio = Math.min(window.devicePixelRatio, 1.5);
-  private pixelRatio = this.maxRatio;
 
   /**
    * Drop resolution on GPUs that can't keep up; creep back when they can.

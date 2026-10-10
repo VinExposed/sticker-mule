@@ -80,7 +80,9 @@ const line = (d: string, w = 14, color = INK, extra = ''): string =>
  * union gets ONE clean outer outline with no internal seams.
  */
 const underlay = (ds: string[], w = S * 2): string =>
-  ds.map((d) => `<path d="${d}" fill="${INK}" stroke="${INK}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+  ds
+    .map((d) => `<path d="${d}" fill="${INK}" stroke="${INK}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round"/>`)
+    .join('');
 
 /** Soft highlight. */
 const hi = (d: string, opacity = 0.5): string => `<path d="${d}" fill="#ffffff" opacity="${opacity}"/>`;
@@ -159,70 +161,71 @@ function mule(): string {
   // One long donkey head: forehead, slight cheek pinch, wide muzzle.
   const head = scalePath(
     'M256 136C320 136 354 176 354 232C354 262 348 280 354 300C364 330 370 352 368 378' +
-    'C364 426 318 450 256 450C194 450 148 426 144 378C142 352 148 330 158 300C164 280 158 262 158 232' +
-    'C158 176 192 136 256 136Z',
+      'C364 426 318 450 256 450C194 450 148 426 144 378C142 352 148 330 158 300C164 280 158 262 158 232' +
+      'C158 176 192 136 256 136Z',
     1.1,
     1,
   );
   const muzzleZone = 'M100 322C170 288 342 288 412 322L412 480L100 480Z';
-  const mane = 'M212 162C200 140 204 118 222 116C220 92 240 80 254 96C262 74 290 76 292 100C310 88 330 104 320 126C334 132 332 152 316 160C282 148 240 148 212 162Z';
+  const mane =
+    'M212 162C200 140 204 118 222 116C220 92 240 80 254 96C262 74 290 76 292 100C310 88 330 104 320 126C334 132 332 152 316 160C282 148 240 148 212 162Z';
   const lensL = scalePath('M152 240Q152 230 162 230L238 230Q250 230 248 242L242 274Q238 296 214 296L184 296Q158 296 154 272Z', 1.08, 1);
   const lensR = scalePath('M360 240Q360 230 350 230L274 230Q262 230 264 242L270 274Q274 296 298 296L328 296Q354 296 358 272Z', 1.08, 1);
 
   return doc(
     g(
       'translate(0 6)',
-    // ears (behind the head)
-    shape(earL, C.tangerine) +
-      fill(earLInner, C.pink) +
-      mirrorX(shape(earL, C.tangerine) + fill(earLInner, C.pink)) +
-      // mane (behind the head, peeking out between the ears)
-      shape(mane, C.tangerineDark, 14) +
-      line('M246 128Q252 112 262 106M276 128Q286 116 296 114', 8, INK, ' opacity="0.35"') +
-      // head + muzzle zone with volume
-      fill(head, C.tangerine) +
-      clip(
-        'mule-h',
-        [head],
-        fill('M330 140C390 220 380 330 340 470L420 470L420 140Z', C.tangerineDark) +
-          fill(muzzleZone, C.cream) +
-          fill('M120 420C190 470 330 470 400 400L400 480L120 480Z', C.creamDark) +
-          line('M110 326C176 290 336 290 402 326', 14),
-      ) +
-      line(head, S) +
-      hi(ell(192, 180, 24, 12), 0.5) +
-      hiLine('M262 120Q270 108 282 106', 6, 0.5) +
-      // eyes peeking over the shades
-      shape(ell(208, 244, 27, 31), C.white, 12) +
-      shape(ell(304, 244, 27, 31), C.white, 12) +
-      fill(ell(214, 230, 12, 14), INK) +
-      fill(ell(310, 230, 12, 14), INK) +
-      fill(ell(210, 224, 4), C.white) +
-      fill(ell(306, 224, 4), C.white) +
-      line('M184 198Q204 190 224 196', 10) +
-      line('M286 186Q308 172 330 186', 10) +
-      // nostrils
-      fill(ell(210, 352, 16, 9), INK, ' transform="rotate(-24 210 352)"') +
-      fill(ell(302, 352, 16, 9), INK, ' transform="rotate(24 302 352)"') +
-      // grin + buck teeth
-      shape('M236 398L236 424Q246 430 256 424Q266 430 276 424L276 398Z', C.white, 10) +
-      line('M256 402L256 422', 7) +
-      line('M190 384Q256 418 322 384', 14) +
-      // sunglasses slipping down the snout
-      g(
-        'translate(0 16) rotate(-5 256 262)',
-        line('M150 244L124 234M362 244L388 234', 12) +
-          shape(lensL, INK, 10) +
-          shape(lensR, INK, 10) +
-          line('M244 240Q256 232 268 240', 12) +
-          hiLine('M164 248L192 248', 8, 0.9) +
-          hiLine('M284 248L312 248', 8, 0.9) +
-          hiLine('M166 264L176 264', 8, 0.6) +
-          hiLine('M286 264L296 264', 8, 0.6),
-      ) +
-      // blush
-      fill(ell(162, 384, 16, 8), C.pink, ' opacity="0.8"') +
-      fill(ell(350, 384, 16, 8), C.pink, ' opacity="0.8"'),
+      // ears (behind the head)
+      shape(earL, C.tangerine) +
+        fill(earLInner, C.pink) +
+        mirrorX(shape(earL, C.tangerine) + fill(earLInner, C.pink)) +
+        // mane (behind the head, peeking out between the ears)
+        shape(mane, C.tangerineDark, 14) +
+        line('M246 128Q252 112 262 106M276 128Q286 116 296 114', 8, INK, ' opacity="0.35"') +
+        // head + muzzle zone with volume
+        fill(head, C.tangerine) +
+        clip(
+          'mule-h',
+          [head],
+          fill('M330 140C390 220 380 330 340 470L420 470L420 140Z', C.tangerineDark) +
+            fill(muzzleZone, C.cream) +
+            fill('M120 420C190 470 330 470 400 400L400 480L120 480Z', C.creamDark) +
+            line('M110 326C176 290 336 290 402 326', 14),
+        ) +
+        line(head, S) +
+        hi(ell(192, 180, 24, 12), 0.5) +
+        hiLine('M262 120Q270 108 282 106', 6, 0.5) +
+        // eyes peeking over the shades
+        shape(ell(208, 244, 27, 31), C.white, 12) +
+        shape(ell(304, 244, 27, 31), C.white, 12) +
+        fill(ell(214, 230, 12, 14), INK) +
+        fill(ell(310, 230, 12, 14), INK) +
+        fill(ell(210, 224, 4), C.white) +
+        fill(ell(306, 224, 4), C.white) +
+        line('M184 198Q204 190 224 196', 10) +
+        line('M286 186Q308 172 330 186', 10) +
+        // nostrils
+        fill(ell(210, 352, 16, 9), INK, ' transform="rotate(-24 210 352)"') +
+        fill(ell(302, 352, 16, 9), INK, ' transform="rotate(24 302 352)"') +
+        // grin + buck teeth
+        shape('M236 398L236 424Q246 430 256 424Q266 430 276 424L276 398Z', C.white, 10) +
+        line('M256 402L256 422', 7) +
+        line('M190 384Q256 418 322 384', 14) +
+        // sunglasses slipping down the snout
+        g(
+          'translate(0 16) rotate(-5 256 262)',
+          line('M150 244L124 234M362 244L388 234', 12) +
+            shape(lensL, INK, 10) +
+            shape(lensR, INK, 10) +
+            line('M244 240Q256 232 268 240', 12) +
+            hiLine('M164 248L192 248', 8, 0.9) +
+            hiLine('M284 248L312 248', 8, 0.9) +
+            hiLine('M166 264L176 264', 8, 0.6) +
+            hiLine('M286 264L296 264', 8, 0.6),
+        ) +
+        // blush
+        fill(ell(162, 384, 16, 8), C.pink, ' opacity="0.8"') +
+        fill(ell(350, 384, 16, 8), C.pink, ' opacity="0.8"'),
     ),
   );
 }
@@ -280,8 +283,19 @@ function mushroom(): string {
   const stem = 'M172 280C164 340 156 400 168 436Q174 456 200 456L312 456Q338 456 344 436C356 400 348 340 340 280Z';
   const grass = roundPoly(
     [
-      [118, 458], [124, 418], [150, 440], [164, 402], [190, 436], [214, 420], [256, 436],
-      [298, 420], [322, 436], [348, 402], [362, 440], [388, 418], [394, 458],
+      [118, 458],
+      [124, 418],
+      [150, 440],
+      [164, 402],
+      [190, 436],
+      [214, 420],
+      [256, 436],
+      [298, 420],
+      [322, 436],
+      [348, 402],
+      [362, 440],
+      [388, 418],
+      [394, 458],
     ],
     12,
   );
@@ -420,8 +434,13 @@ function pizza(): string {
     underlay(goo) +
       line(crust, 56 + S * 2) +
       goo.map((d) => fill(d, C.lemon)).join('') +
-      clip('pz-c', goo, fill('M300 120L440 120L440 330L262 470L200 470Z', C.lemonDark) + pep(130, 178, 34) + pep(388, 170, 32) + pep(256, 392, 26)) +
-      hiLine('M384 230L384 290', 9, 0.5) + hiLine('M120 220L120 250', 8, 0.5) +
+      clip(
+        'pz-c',
+        goo,
+        fill('M300 120L440 120L440 330L262 470L200 470Z', C.lemonDark) + pep(130, 178, 34) + pep(388, 170, 32) + pep(256, 392, 26),
+      ) +
+      hiLine('M384 230L384 290', 9, 0.5) +
+      hiLine('M120 220L120 250', 8, 0.5) +
       line(crust, 56, C.crust) +
       line('M114 128Q256 70 398 128', 12, C.crustDark, ' opacity="0.6"') +
       hiLine('M140 116Q196 94 244 90', 12, 0.6) +
@@ -500,7 +519,10 @@ function melt(): string {
   const cx = 256;
   const cy = 234;
   const raysPts = sunRays(cx, cy, 184, 128, [-120, -90, -60, -30, 0, 30, 60, 90, 120], 15);
-  const rays = roundPoly(raysPts, raysPts.map((_, i) => (i % 2 === 1 ? 20 : 8)));
+  const rays = roundPoly(
+    raysPts,
+    raysPts.map((_, i) => (i % 2 === 1 ? 20 : 8)),
+  );
   const face = ell(cx, cy, 118);
   const drips =
     'M147 280L142 314Q142 344 164 344Q186 344 186 318Q192 306 204 312L204 402Q204 432 228 432Q252 432 252 402L252 370Q260 358 270 368L270 376Q270 402 290 402Q310 402 310 376L310 350Q318 340 328 346L328 326Q328 350 346 350Q364 350 364 326L365 280L256 236Z';
@@ -541,7 +563,13 @@ function cactus(): string {
   return doc(
     underlay(greens) +
       greens.map((d) => fill(d, C.mint)).join('') +
-      clip('ca-g', greens, fill('M282 120L330 120L330 390L282 390Z', C.mintDark) + fill('M366 160L420 160L420 340L366 340Z', C.mintDark) + fill('M100 296L210 296L210 330L100 330Z', C.mintDark)) +
+      clip(
+        'ca-g',
+        greens,
+        fill('M282 120L330 120L330 390L282 390Z', C.mintDark) +
+          fill('M366 160L420 160L420 340L366 340Z', C.mintDark) +
+          fill('M100 296L210 296L210 330L100 330Z', C.mintDark),
+      ) +
       line('M256 210L256 250M256 290L256 340', 8, C.mintDark) +
       hiLine('M220 200L220 250', 14, 0.5) +
       hiLine('M142 236L142 262', 10, 0.5) +
@@ -556,7 +584,13 @@ function cactus(): string {
       hiLine('M166 372L214 372', 9, 0.55) +
       // party hat
       shape(hat, C.cobalt, 14) +
-      clip('ca-h', [hat], line('M218 136L296 130', 12, C.lemon) + line('M234 104L284 100', 10, C.lemon) + fill('M272 60L320 160L290 160Z', C.cobaltDark, ' opacity="0.6"')) +
+      clip(
+        'ca-h',
+        [hat],
+        line('M218 136L296 130', 12, C.lemon) +
+          line('M234 104L284 100', 10, C.lemon) +
+          fill('M272 60L320 160L290 160Z', C.cobaltDark, ' opacity="0.6"'),
+      ) +
       line(hat, 14) +
       shape(ell(262, 66, 18), C.pink, 12) +
       hi(ell(256, 60, 6, 4), 0.8) +
@@ -586,18 +620,13 @@ function letters(): string {
 
   const y1 = 156;
   const y2 = 280;
-  return (
-    P(116, y1, 46) +
-    E(196, y1, 42) +
-    E(272, y1, 42) +
-    L(348, y1, 44) +
-    M(172, y2, 76) +
-    E(282, y2, 42) +
-    bang(356, y2)
-  );
+  return P(116, y1, 46) + E(196, y1, 42) + E(272, y1, 42) + L(348, y1, 44) + M(172, y2, 76) + E(282, y2, 42) + bang(356, y2);
 }
 
-const BURST = roundPoly(starPts(256, 256, 14, 212, 184), Array.from({ length: 28 }, (_, i) => (i % 2 === 0 ? 20 : 12)));
+const BURST = roundPoly(
+  starPts(256, 256, 14, 212, 184),
+  Array.from({ length: 28 }, (_, i) => (i % 2 === 0 ? 20 : 12)),
+);
 const DISC = ell(256, 256, 160);
 
 function badge(): string {
@@ -611,9 +640,7 @@ function badge(): string {
       g(
         'rotate(-8 256 256)',
         // drop shadow + outline + fill strokes
-        g('translate(6 8)', line(text, 50, INK)) +
-          line(text, 50, INK) +
-          line(text, 24, C.lemon),
+        g('translate(6 8)', line(text, 50, INK)) + line(text, 50, INK) + line(text, 24, C.lemon),
       ),
   );
 }

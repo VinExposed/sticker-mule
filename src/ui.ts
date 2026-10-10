@@ -131,9 +131,9 @@ export function mountUi(deps: UiDeps) {
         break;
     }
   };
-  root.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((b) =>
-    b.addEventListener('click', () => void act(b.dataset.act!, b)),
-  );
+  root
+    .querySelectorAll<HTMLButtonElement>('button[data-act]')
+    .forEach((b) => b.addEventListener('click', () => void act(b.dataset.act!, b)));
 
   const v = new THREE.Vector3();
   let lastNote = '';
@@ -225,7 +225,7 @@ function openMaker(deps: UiDeps) {
   let color = COLORS[0];
   let size = 22;
   let finish: Finish = 'gloss';
-  const history: ImageData[] = [];
+  const undoStack: ImageData[] = [];
   let dirty = false;
   const markDirty = () => {
     dirty = true;
@@ -271,11 +271,11 @@ function openMaker(deps: UiDeps) {
   );
 
   const snapshot = () => {
-    history.push(g.getImageData(0, 0, cv.width, cv.height));
-    if (history.length > 30) history.shift();
+    undoStack.push(g.getImageData(0, 0, cv.width, cv.height));
+    if (undoStack.length > 30) undoStack.shift();
   };
   const undo = () => {
-    const last = history.pop();
+    const last = undoStack.pop();
     if (last) g.putImageData(last, 0, 0);
   };
   wrap.querySelector('[data-a="undo"]')!.addEventListener('click', undo);

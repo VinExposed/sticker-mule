@@ -1,8 +1,7 @@
 /**
- * Compositions are stored relative to the notebook, so a layout made on a
- * phone (notebook at the top) restores correctly on a laptop (notebook on the
- * left). The payload is deflated and base64url'd into the URL hash; user art
- * rides along as small PNGs.
+ * The saved form of a notebook, and how it travels: deflated and base64url'd
+ * into the URL hash (or localStorage), with any user art riding along as a
+ * small image. See composition.ts for how it maps to the desk.
  */
 
 export interface SavedSticker {
@@ -20,13 +19,13 @@ export interface SavedSticker {
 export interface Composition {
   v: 1;
   s: SavedSticker[];
-  /** user art: design id -> PNG data URL */
+  /** user art: design id -> image data URL */
   u?: Record<string, string>;
 }
 
 const round = (n: number, p = 100) => Math.round(n * p) / p;
 
-export function compact(c: Composition): Composition {
+function compact(c: Composition): Composition {
   return {
     v: 1,
     s: c.s.map((s) => ({ ...s, x: round(s.x), z: round(s.z), a: round(s.a, 1000), l: round(s.l, 1000) })),

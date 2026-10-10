@@ -4,21 +4,21 @@ import { buildSticker, canvas, rasterizeSvg, type Finish, type StickerSource } f
 /**
  * Every sticker design the app knows about, keyed by `<design>:<finish>`.
  * Built-in designs come from SVG; user designs from a bitmap that we keep a
- * small PNG of so compositions can be saved and shared.
+ * small WebP of so compositions can be saved and shared.
  */
 export class Library {
   private cache = new Map<string, Promise<StickerSource>>();
   private art = new Map<string, { canvas: HTMLCanvasElement; foil: HTMLCanvasElement | null; name: string }>();
-  /** User designs: id -> small PNG data URL. */
+  /** User designs: id -> small image data URL. */
   readonly custom = new Map<string, string>();
 
   get builtins() {
-    return STICKER_ART.map((a) => ({ id: a.id, name: a.name, finish: a.finish as Finish }));
+    return STICKER_ART.map((a) => ({ id: a.id, name: a.name, finish: a.finish }));
   }
 
   async source(design: string, finish?: Finish): Promise<StickerSource> {
     const def = STICKER_ART.find((a) => a.id === design);
-    const f: Finish = finish ?? (def?.finish as Finish) ?? 'gloss';
+    const f: Finish = finish ?? def?.finish ?? 'gloss';
     const key = `${design}:${f}`;
     let p = this.cache.get(key);
     if (!p) {
@@ -69,9 +69,9 @@ export class Library {
     return id;
   }
 
-  async addCustomFromUrl(id: string, url: string) {
-    if (this.custom.has(id)) return;
-    this.custom.set(id, url);
+  /** Register user art that arrived in a saved/shared composition. */
+  addCustomFromUrl(id: string, url: string) {
+    if (!this.custom.has(id)) this.custom.set(id, url);
   }
 }
 

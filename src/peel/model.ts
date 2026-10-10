@@ -1,3 +1,5 @@
+import type { Vec2 } from '../math';
+
 /**
  * The peel model.
  *
@@ -18,11 +20,6 @@
  * side into the stuck side), `v` runs along the fold line. Arc length is
  * preserved, so the sheet never stretches.
  */
-
-export interface Vec2 {
-  x: number;
-  y: number;
-}
 
 export interface PeelState {
   /** Unit peel direction (from the peeled side into the stuck side). */
@@ -45,6 +42,7 @@ export interface DeformOut {
   nz: number;
 }
 
+/** No peel at all: the fold line is far behind the sticker. */
 export const FLAT: PeelState = { dx: 1, dy: 0, f: -1e9, r: 0.3, theta: 0 };
 
 /** Map a rest-pose point of the sticker to its peeled position and normal. */
@@ -206,7 +204,7 @@ export function solvePeel(inp: PeelInput): PeelSolution {
   };
 }
 
-export function smoothstep(a: number, b: number, x: number): number {
+function smoothstep(a: number, b: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 }

@@ -1,17 +1,21 @@
 import * as THREE from 'three';
-import { deform, type DeformOut, type PeelState } from '../peel/model';
+import { deform, FLAT, type DeformOut, type PeelState } from '../peel/model';
 import { fitsOn, wrapPoint, type Box, type Wrapped } from '../peel/wrap';
 import type { StickerSource } from './factory';
+import { rotateToLocal, rotateToWorld } from '../math';
 import { acquireMaterials, type StickerMaterials } from './materials';
 import { splitGeometry, type SplitGeometry } from './split';
 
 export type StickerMode = 'stuck' | 'peeling' | 'carried' | 'dropping';
+const MODE_INDEX: Record<StickerMode, number> = { stuck: 0, peeling: 1, carried: 2, dropping: 3 };
 
+/** Thickness of one sticker (cm): stacked stickers sit this far apart. */
+export const LAYER = 0.012;
 
-let nextId = 1;
 const tmp: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
 const wrapped: Wrapped = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 };
 const held: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
+const offset = { x: 0, y: 0 };
 const m4 = new THREE.Matrix4();
 const m4b = new THREE.Matrix4();
 const q = new THREE.Quaternion();
@@ -20,11 +24,12 @@ const ONE = new THREE.Vector3(1, 1, 1);
 const v3 = new THREE.Vector3();
 
 /**
- * One sticker: a finely tessellated sheet whose vertices are recomputed on the
- * CPU whenever it's moving. Resting stickers cost nothing per frame.
+ * One sticker. Resting flat, it's two static meshes cut from its silhouette
+ * (see split.ts). While it curls, wraps or flies it switches to a finely
+ * tessellated grid whose vertices are recomputed on the CPU, only on frames
+ * where something changed.
  */
 export class Sticker {
-  readonly id = nextId++;
   readonly src: StickerSource;
   readonly root = new THREE.Group();
   readonly front: THREE.Mesh;
@@ -33,13 +38,10 @@ export class Sticker {
   /** Depth pre-pass for the resting edge band. */
   readonly edgeDepth: THREE.Mesh;
   readonly back: THREE.Mesh;
-  /**
-   * Fine grid for curling/wrapping, built the first time it's needed; a plain
-   * quad when lying flat (most stickers, most of the time).
-   */
+  /** Fine grid for curling, wrapping and flying; built on first use. */
   private geometry: THREE.BufferGeometry | null = null;
   private readonly flat: SplitGeometry;
-  materials: StickerMaterials;
+  readonly materials: StickerMaterials;
 
   /** Rest-pose vertex positions in sticker space (cm, y down). */
   private rest: Float32Array | null = null;
@@ -57,7 +59,7 @@ export class Sticker {
   surface: string = 'desk';
 
   /** Peel shape while stuck/peeling. */
-  peel: PeelState = { dx: 1, dy: 0, f: -1e9, r: 0.3, theta: 0 };
+  peel: PeelState = { ...FLAT };
 
   /** Carried pose: pivot (the point you're holding) in world, plus tilt. */
   pivot = new THREE.Vector3();
@@ -95,22 +97,30 @@ export class Sticker {
 
   /** World XZ of a sticker-space point when lying flat. */
   toWorld(px: number, py: number, out = new THREE.Vector2()) {
-    const c = Math.cos(this.yaw);
-    const s = Math.sin(this.yaw);
-    return out.set(this.x + c * px + s * py, this.z - s * px + c * py);
+    rotateToWorld(px, py, this.yaw, offset);
+    return out.set(this.x + offset.x, this.z + offset.y);
   }
 
   /** Sticker-space point under a world XZ position (when lying flat). */
   toLocal(wx: number, wz: number, out = new THREE.Vector2()) {
-    const c = Math.cos(this.yaw);
-    const s = Math.sin(this.yaw);
-    const dx = wx - this.x;
-    const dz = wz - this.z;
-    return out.set(c * dx - s * dz, s * dx + c * dz);
+    rotateToLocal(wx - this.x, wz - this.z, this.yaw, offset);
+    return out.set(offset.x, offset.y);
   }
 
+  /** Where the centre lands (world XZ) if laid flat with the held point at the pivot. */
+  centreUnderPivot(out = new THREE.Vector2()) {
+    rotateToWorld(this.grab.x, this.grab.y, this.yaw, offset);
+    return out.set(this.pivot.x - offset.x, this.pivot.z - offset.y);
+  }
+
+  /** Half the diagonal: no part of the sticker is further than this from its centre. */
   radius() {
     return 0.5 * Math.hypot(this.src.width, this.src.height);
+  }
+
+  /** No curl at all (the peel model is a no-op). */
+  private get isFlat() {
+    return Math.abs(this.peel.theta) <= 1e-4 || this.peel.f < -1e8;
   }
 
   /** Recompute the transform and the deformed vertices. */
@@ -119,7 +129,7 @@ export class Sticker {
     this.dirty = false;
     const flying = this.mode === 'carried' || this.mode === 'dropping';
     const peel = this.peel;
-    const flat = Math.abs(peel.theta) <= 1e-4 || peel.f < -1e8;
+    const flat = this.isFlat;
 
     if (flying) {
       // M = T(pivot) * tilt * Ry(yaw) * T(-grab'), where grab' is the held
@@ -152,7 +162,7 @@ export class Sticker {
     // Draw order: edge depth, then cores (topmost first, so whatever they
     // cover is never shaded), then the rest of the scene, then edge colour.
     // A curling or carried sticker is a single alpha-tested mesh, drawn early.
-    const layerIdx = Math.round(this.layer / 0.006);
+    const layerIdx = Math.round((this.layer * 2) / LAYER);
     if (simple) {
       this.edgeDepth.renderOrder = -300000 - layerIdx;
       this.core.renderOrder = -200000 - layerIdx;
@@ -278,14 +288,14 @@ export class Sticker {
     out[16] = this.bend;
     out[17] = this.grab.x;
     out[18] = this.grab.y;
-    out[19] = ['stuck', 'peeling', 'carried', 'dropping'].indexOf(this.mode);
+    out[19] = MODE_INDEX[this.mode];
     return out;
   }
 
   /** World position of a rest-pose point in the current shape. */
   worldPoint(px: number, py: number, out = new THREE.Vector3()) {
-    const flat = Math.abs(this.peel.theta) <= 1e-4 || this.peel.f < -1e8;
-    const d = flat ? { x: px, y: py, z: 0 } : deform(px, py, this.peel, { ...tmp });
+    if (this.isFlat) return out.set(px, 0, py).applyMatrix4(this.root.matrix);
+    const d = deform(px, py, this.peel, held);
     return out.set(d.x, d.z, d.y).applyMatrix4(this.root.matrix);
   }
 

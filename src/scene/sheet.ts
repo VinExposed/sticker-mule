@@ -92,7 +92,8 @@ export function buildSheet(slots: Slot[], packNo: number) {
 
   // Kiss-cut holes: where each sticker sits there's glossy liner underneath.
   for (const s of slots) {
-    const sil = silhouette(s.src.front);
+    // The sticker's own art is its silhouette: tint it for the cut and liner.
+    const sil = s.src.front;
     const draw = (ctx: CanvasRenderingContext2D, img: HTMLCanvasElement, ox = 0, oy = 0, grow = 0) => {
       ctx.save();
       ctx.translate((s.x + SHEET.w / 2) * PX + ox, (s.y + SHEET.d / 2) * PX + oy);
@@ -130,7 +131,6 @@ export function buildSheet(slots: Slot[], packNo: number) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  mesh.matrixAutoUpdate = true;
   return {
     mesh,
     dispose() {
@@ -156,10 +156,6 @@ function roundedRect(w: number, h: number, r: number) {
   s.lineTo(x, y + r);
   s.quadraticCurveTo(x, y, x + r, y);
   return s;
-}
-
-function silhouette(front: HTMLCanvasElement) {
-  return front;
 }
 
 function tint(src: HTMLCanvasElement, color: string) {

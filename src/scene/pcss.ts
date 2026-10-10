@@ -5,18 +5,28 @@ import * as THREE from 'three';
  *
  * A sticker lying flat should cast a razor-thin contact line, the curl at a
  * peel front a slightly soft one, and a sticker held 3 cm up a wide, faint
- * blob. That's exactly what PCSS does: search the shadow map for blockers,
- * estimate how far above the receiver they are, and widen the filter with
- * that distance. Three's PCF path uses hardware-compare samplers which can't
- * read raw depth, so this replaces the BASIC shadow lookup instead.
+ * blob. That's what PCSS does: search the shadow map for blockers, estimate
+ * how far above the receiver they are, and widen the filter with that
+ * distance. Three's PCF path uses hardware-compare samplers which can't read
+ * raw depth, so this replaces the BASIC shadow lookup instead.
  *
- * `frustum` is the width of the orthographic shadow camera (world units),
- * `depthRange` is far - near, and `lightSize` is the light's angular size as
- * tan(angle) — how fast the penumbra grows per unit of height.
+ * Two things keep it cheap:
+ * - Blockers are judged by world height, not raw depth. The shadow camera is
+ *   orthographic, so height is an affine function of (u, v, depth). With the
+ *   light at an angle, a flat surface's depth varies across the map and would
+ *   otherwise look like its own blocker.
+ * - PcssMinMax summarises the shadow map's min/max height per cell. Pixels
+ *   with nothing taller nearby (or only things far taller) skip the search.
  */
-/** PCSS blocker-search radius in shadow-map uv (also used to size PcssMinMax). */
+
+/** Blocker-search radius in shadow-map uv (also sizes PcssMinMax's dilation). */
 export const pcssSearchUv = (frustum: number, lightSize: number) => (lightSize * 5.0) / frustum;
 
+/**
+ * `frustum` is the width of the orthographic shadow camera (world units) and
+ * `lightSize` the light's angular size as tan(angle): how fast the penumbra
+ * grows per unit of height.
+ */
 export function installPcss(frustum: number, lightSize: number) {
   const f = (n: number) => n.toFixed(6);
   const pcss = /* glsl */ `
@@ -39,7 +49,7 @@ vec2 pcssVogel(int i, int n, float phi) {
 }
 float pcssH(vec2 uv, float z) { return dot(pcssHeight, vec4(uv, z, 1.0)); }
 float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec4 shadowCoord ) {
-  shadowRadius;
+  shadowRadius; // part of three's signature; PCSS sizes its own filter
   shadowCoord.xyz /= shadowCoord.w;
   shadowCoord.z += shadowBias;
   if (shadowCoord.x < 0.0 || shadowCoord.x > 1.0 || shadowCoord.y < 0.0 || shadowCoord.y > 1.0 || shadowCoord.z > 1.0) return 1.0;
@@ -100,9 +110,10 @@ float getShadow( sampler2D shadowMap, vec2 shadowMapSize, float shadowIntensity,
 }
 
 /**
- * A tiny texture holding, for each block of the shadow map, the nearest and
- * farthest depth within reach of the PCSS blocker search. Rebuilt only when
- * the shadow map is (two cheap passes on a 64 x 64 target).
+ * A small texture holding, for each cell of the shadow map, the lowest and
+ * highest surface (world height) within reach of the PCSS blocker search.
+ * Rebuilt only when the shadow map is: a reduce pass and a dilate pass on a
+ * `cells` x `cells` float target.
  */
 export class PcssMinMax {
   readonly uniform: { value: THREE.Texture | null } = { value: null };
@@ -185,7 +196,7 @@ export class PcssMinMax {
         }`,
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.reduceMat);
-    // Without float render targets, fall back to "always search" (lo=0, hi=1).
+    // Without float render targets, fall back to "always search" (lo=-inf, hi=+inf).
     this.supported = renderer.extensions.has('EXT_color_buffer_float');
     this.quad.frustumCulled = false;
     this.scene.add(this.quad);

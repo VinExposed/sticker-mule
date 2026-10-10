@@ -1,22 +1,22 @@
 import * as THREE from 'three';
 import type { Sfx } from './audio';
-import { solvePeel, type Vec2 } from './peel/model';
+import { clamp, easeInOutCubic, lerp2, normalize2, rotateToLocal, rotateToWorld, type Vec2 } from './math';
+import { deform, solvePeel, type DeformOut } from './peel/model';
 import { buildSheet, layoutPack, SHEET, type Slot } from './scene/sheet';
 import type { Surface, World } from './scene/world';
 import { covers, edgeInfo, extent, type StickerSource } from './stickers/factory';
-import { Sticker } from './stickers/sticker';
+import { LAYER, Sticker } from './stickers/sticker';
 
 /** Per-sticker animation state that only the controller cares about. */
 interface Motion {
-  // Peeling.
+  // Peeling (and the hover/invite lift, which is a tiny peel).
   grab: Vec2;
   inward: Vec2;
   target: Vec2;
   targetVel: Vec2;
   lastF: number;
   r: number;
-  releasing: boolean;
-  // Hover/invite lift (0..1) while stuck.
+  // Hover/invite lift amount (0..1) while stuck.
   hover: number;
   hoverVel: number;
   hoverGoal: number;
@@ -39,39 +39,78 @@ interface Sheet {
   dispose(): void;
 }
 
-const CARRY_LIFT = 3.4;
-const LAYER = 0.012;
+/** A scripted animation step; return false when finished. */
+type Tween = (now: number) => boolean;
 
+/** How high (cm) a held sticker floats above the tallest surface. */
+const CARRY_LIFT = 3.4;
+/** Peel reach (cm) of the corner lift when hovering an edge / on the invite. */
+const HOVER_REACH = 0.12;
+const INVITE_REACH = 0.4;
+/** Fraction peeled at which a sticker lets go of the surface. */
+const POP_FRACTION = 0.7;
+/** Landing: time to fall (s), then how long the edges take to settle. */
+const DROP_FALL = 0.12;
+const DROP_SETTLE = 0.3;
+/** Edge lift (cm) at the far edge when a sticker lands, before slapping down. */
+const SLAP_LIFT = 0.42;
+
+const scratch: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
+const v2 = { x: 0, y: 0 };
+
+/**
+ * The interaction model: what's under the pointer, what you're holding, and
+ * every spring that makes stickers peel, swing, land and settle. Each sticker
+ * is in one of four modes:
+ *
+ *   stuck ──grab edge──▶ peeling ──peeled enough / pulled hard──▶ carried
+ *     ▲                     │ let go                                  │ let go
+ *     └──── rolls back ◀────┘                                         ▼
+ *     └─────────────────────── settles ◀──────────────────────── dropping
+ */
 export class Playground {
   readonly stickers: Sticker[] = [];
+  /** Set by the app: restarts the frame loop if it went to sleep. */
+  wake: () => void = () => {};
+  onFirstPeel: (() => void) | null = null;
+  onChange: (() => void) | null = null;
+
   private motion = new Map<Sticker, Motion>();
+  private tweens: Tween[] = [];
   private sheet: Sheet | null = null;
+  private sheetPose = { x: 9.6, z: 0.6, yaw: -0.07 };
   private packNo = 0;
+  private maxAniso: number;
+
+  // Pointer.
   private rc = new THREE.Raycaster();
   private plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private hit = new THREE.Vector3();
-  private tiltGoal = new THREE.Quaternion();
-  private tiltAxis = new THREE.Vector3();
-  private identity = new THREE.Quaternion();
   private ndc = new THREE.Vector2(0, 0);
   private hasPointer = false;
+  private lastPointerType = 'mouse';
   private held: Sticker | null = null;
+  /** A freshly made sticker follows the mouse until you click (no drag). */
+  private clickToDrop = false;
+  private hovered: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null = null;
+
+  // View.
   private orbitDrag: { x: number; y: number; yaw: number; pitch: number } | null = null;
   private userOrbit = { yaw: 0, pitch: 0 };
   private intro = 0;
+  private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
+
+  // The sticker with its corner up on the opening screen.
+  private invite: Sticker | null = null;
+  private inviteStart = performance.now();
+
+  // Scratch.
   private poseA = new Float64Array(20);
   private poseB = new Float64Array(20);
-  private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
-  private hovered: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null = null;
-  private invite: Sticker | null = null;
-  private clickToDrop = false;
-  private lastPointerType = 'mouse';
-  private inviteStart = performance.now();
-  /** Set by the app: restarts the frame loop if it went to sleep. */
-  wake: () => void = () => {};
-  private maxAniso: number;
-  onFirstPeel: (() => void) | null = null;
-  onChange: (() => void) | null = null;
+  private tiltGoal = new THREE.Quaternion();
+  private tiltAxis = new THREE.Vector3();
+  private identity = new THREE.Quaternion();
+  private centre = new THREE.Vector2();
 
   constructor(
     readonly world: World,
@@ -103,10 +142,10 @@ export class Playground {
     const sh = portrait ? { x: 0.6, z: 14.4, yaw: -0.05 } : { x: 9.6, z: 0.6, yaw: -0.07 };
     const sheetName = this.sheet?.name;
     // Everything that isn't on the sheet travels with the notebook.
-    this.moveSurface(this.world.notebookSurface, nb.x, nb.z, nb.yaw, (s) => s.surface !== sheetName);
+    this.moveSurface(this.world.notebookSurface, nb, (s) => s.surface !== sheetName);
     this.world.setNotebookPose(nb.x, nb.z, nb.yaw);
     if (this.sheet) {
-      this.moveSurface(this.sheet.surface, sh.x, sh.z, sh.yaw, (s) => s.surface === sheetName);
+      this.moveSurface(this.sheet.surface, sh, (s) => s.surface === sheetName);
       this.sheet.mesh.position.set(sh.x, 0, sh.z);
       this.sheet.mesh.rotation.y = sh.yaw;
     }
@@ -114,27 +153,20 @@ export class Playground {
     // Leave room for the toolbar at the bottom of the screen.
     const min = portrait ? new THREE.Vector2(-8.5, -18.6) : new THREE.Vector2(-15.7, -11.4);
     const max = portrait ? new THREE.Vector2(8.5, 27.5) : new THREE.Vector2(17, 12.2);
-    this.world.frame(min, max);
+    this.world.fitView(min, max);
   }
-  private sheetPose = { x: 9.6, z: 0.6, yaw: -0.07 };
 
   /** Move a surface and the stuck stickers that belong to it. */
-  private moveSurface(surf: Surface, x: number, z: number, yaw: number, owns: (s: Sticker) => boolean) {
-    const old = { x: surf.x, z: surf.z, yaw: surf.yaw };
-    Object.assign(surf, { x, z, yaw });
-    const c = Math.cos(old.yaw);
-    const sn = Math.sin(old.yaw);
-    const c2 = Math.cos(yaw);
-    const s2 = Math.sin(yaw);
+  private moveSurface(surf: Surface, to: { x: number; z: number; yaw: number }, owns: (s: Sticker) => boolean) {
+    const from = { x: surf.x, z: surf.z, yaw: surf.yaw };
+    Object.assign(surf, to);
     for (const s of this.stickers) {
       if (s.mode !== 'stuck' || !owns(s)) continue;
-      const dx = s.x - old.x;
-      const dz = s.z - old.z;
-      const lx = c * dx - sn * dz;
-      const lz = sn * dx + c * dz;
-      s.x = x + c2 * lx + s2 * lz;
-      s.z = z - s2 * lx + c2 * lz;
-      s.yaw += yaw - old.yaw;
+      const local = rotateToLocal(s.x - from.x, s.z - from.z, from.yaw, v2);
+      const world = rotateToWorld(local.x, local.y, to.yaw, v2);
+      s.x = to.x + world.x;
+      s.z = to.z + world.y;
+      s.yaw += to.yaw - from.yaw;
       s.dirty = true;
     }
   }
@@ -153,15 +185,13 @@ export class Playground {
     const slots = layoutPack(sources, seed);
     const built = buildSheet(slots, this.packNo);
     const name = `sheet-${this.packNo}`;
-    const surface: Surface = { name, x: 0, z: 0, yaw: 0, w: SHEET.w, d: SHEET.d, top: SHEET.t };
+    const surface: Surface = { name, ...this.sheetPose, w: SHEET.w, d: SHEET.d, top: SHEET.t };
     this.world.surfaces.push(surface);
     this.world.scene.add(built.mesh);
     this.world.track(built.mesh);
+    built.mesh.position.set(surface.x, 0, surface.z);
+    built.mesh.rotation.y = surface.yaw;
     this.sheet = { mesh: built.mesh, surface, name, dispose: built.dispose };
-    const sp = this.sheetPose;
-    Object.assign(surface, sp);
-    built.mesh.position.set(sp.x, 0, sp.z);
-    built.mesh.rotation.y = sp.yaw;
     const placed = this.placeOnSheet(slots);
     if (old) this.slideIn(built.mesh, placed);
     return placed;
@@ -169,23 +199,20 @@ export class Playground {
 
   private placeOnSheet(slots: Slot[]) {
     const sheet = this.sheet!;
-    const out: Sticker[] = [];
-    const { x: sx, z: sz, yaw: syaw } = sheet.surface;
-    const c = Math.cos(syaw);
-    const s = Math.sin(syaw);
-    for (const slot of slots) {
+    const { x, z, yaw } = sheet.surface;
+    return slots.map((slot) => {
       const st = this.add(slot.src);
-      st.x = sx + c * slot.x + s * slot.y;
-      st.z = sz - s * slot.x + c * slot.y;
-      st.yaw = syaw + slot.yaw;
+      const at = rotateToWorld(slot.x, slot.y, yaw, v2);
+      st.x = x + at.x;
+      st.z = z + at.y;
+      st.yaw = yaw + slot.yaw;
       st.surface = sheet.name;
       st.support = sheet.surface;
-      st.layer = 0.006;
+      st.layer = LAYER / 2;
       st.baseY = SHEET.t + st.layer;
       st.dirty = true;
-      out.push(st);
-    }
-    return out;
+      return st;
+    });
   }
 
   add(src: StickerSource) {
@@ -208,6 +235,12 @@ export class Playground {
     if (this.hovered?.sticker === st) this.hovered = null;
   }
 
+  /** Run `step` every frame until it returns false. */
+  private animate(step: Tween) {
+    this.tweens.push(step);
+    this.wake();
+  }
+
   private slideAway(old: Sheet, leftovers: Sticker[]) {
     const start = performance.now();
     const from = old.mesh.position.clone();
@@ -215,27 +248,22 @@ export class Playground {
     // Off the sheet's footprint while they move: nothing to wrap around.
     for (const o of offs) o.s.support = null;
     const dir = new THREE.Vector3(1, 0, -0.25).normalize();
-    const step = () => {
-      const t = Math.min(1, (performance.now() - start) / 650);
-      const e = t * t * t;
-      const dx = dir.x * 50 * e;
-      const dz = dir.z * 50 * e;
-      old.mesh.position.set(from.x + dx, 0, from.z + dz);
+    this.animate((now) => {
+      const t = Math.min(1, (now - start) / 650);
+      const d = 50 * t * t * t;
+      old.mesh.position.set(from.x + dir.x * d, 0, from.z + dir.z * d);
       this.world.shadowsDirty = true;
       for (const o of offs) {
-        o.s.x = o.x + dx;
-        o.s.z = o.z + dz;
+        o.s.x = o.x + dir.x * d;
+        o.s.z = o.z + dir.z * d;
         o.s.dirty = true;
       }
-      this.wake();
-      if (t < 1) requestAnimationFrame(step);
-      else {
-        this.world.scene.remove(old.mesh);
-        old.dispose();
-        for (const o of offs) if (this.stickers.includes(o.s)) this.remove(o.s);
-      }
-    };
-    requestAnimationFrame(step);
+      if (t < 1) return true;
+      this.world.scene.remove(old.mesh);
+      old.dispose();
+      for (const o of offs) if (this.stickers.includes(o.s)) this.remove(o.s);
+      return false;
+    });
   }
 
   private slideIn(mesh: THREE.Mesh, stickers: Sticker[]) {
@@ -243,23 +271,27 @@ export class Playground {
     const to = mesh.position.clone();
     const offs = stickers.map((s) => ({ s, x: s.x, z: s.z, support: s.support }));
     for (const o of offs) o.s.support = null;
-    const step = () => {
-      const t = Math.min(1, (performance.now() - start) / 700);
+    const place = (t: number) => {
       const e = 1 - Math.pow(1 - t, 4);
-      const dz = (1 - e) * 34;
       const dx = (1 - e) * -4;
+      const dz = (1 - e) * 34;
       mesh.position.set(to.x + dx, 0, to.z + dz);
       this.world.shadowsDirty = true;
       for (const o of offs) {
+        if (o.s.mode !== 'stuck') continue;
         o.s.x = o.x + dx;
         o.s.z = o.z + dz;
         o.s.dirty = true;
       }
-      this.wake();
-      if (t < 1) requestAnimationFrame(step);
-      else for (const o of offs) if (o.s.mode === 'stuck') o.s.support = o.support;
     };
-    step();
+    place(0);
+    this.animate((now) => {
+      const t = Math.min(1, (now - start) / 700);
+      place(t);
+      if (t < 1) return true;
+      for (const o of offs) if (o.s.mode === 'stuck') o.s.support = o.support;
+      return false;
+    });
   }
 
   /** One sticker's corner is lifted on the opening screen, asking to be peeled. */
@@ -268,27 +300,21 @@ export class Playground {
     if (this.invite && this.invite !== st) this.motion.get(this.invite)!.hoverGoal = 0;
     this.invite = st;
     if (!st) return;
-    // Pick the corner nearest the viewer's lower-right.
+    // The corner nearest the viewer's lower left.
     const p = st.src.points;
-    let best = 0;
+    let best = -Infinity;
     let bi = 0;
-    const c = Math.cos(st.yaw);
-    const s = Math.sin(st.yaw);
     for (let i = 0; i < p.length; i += 2) {
-      // World-ish direction: +x right, +z toward viewer.
-      const wx = c * p[i] + s * p[i + 1];
-      const wz = -s * p[i] + c * p[i + 1];
-      const score = -wx * 0.7 + wz;
+      const w = rotateToWorld(p[i], p[i + 1], st.yaw, v2);
+      const score = -w.x * 0.7 + w.y;
       if (score > best) {
         best = score;
         bi = i;
       }
     }
-    const gx = p[bi];
-    const gy = p[bi + 1];
-    const e = edgeInfo(st.src, gx, gy);
+    const e = edgeInfo(st.src, p[bi], p[bi + 1]);
     const m = this.motion.get(st)!;
-    m.grab = { x: gx, y: gy };
+    m.grab = { x: p[bi], y: p[bi + 1] };
     m.inward = { x: e.nx, y: e.ny };
     m.r = curlRadius(st);
     m.hoverGoal = 1;
@@ -308,12 +334,11 @@ export class Playground {
     const meshes: THREE.Object3D[] = [];
     for (const s of this.stickers) {
       if (s === this.held) continue;
+      s.root.updateMatrixWorld();
       // The raycaster doesn't skip hidden meshes on its own.
       for (const m of [s.front, s.core, s.back]) if (m.visible) meshes.push(m);
     }
-    for (const s of this.stickers) s.root.updateMatrixWorld();
-    const hits = this.rc.intersectObjects(meshes, false);
-    for (const h of hits) {
+    for (const h of this.rc.intersectObjects(meshes, false)) {
       const st = h.object.userData.sticker as Sticker;
       if (!h.uv) continue;
       const x = (h.uv.x - 0.5) * st.src.width;
@@ -347,7 +372,9 @@ export class Playground {
     };
     const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
     if (typeof DOE.requestPermission === 'function') {
-      DOE.requestPermission().then((r) => r === 'granted' && start()).catch(() => {});
+      DOE.requestPermission()
+        .then((r) => r === 'granted' && start())
+        .catch(() => {});
     } else start();
   }
 
@@ -369,7 +396,7 @@ export class Playground {
     const hit = e.button === 0 ? this.pick() : null;
     if (!hit) {
       this.orbitDrag = { x: e.clientX, y: e.clientY, yaw: this.userOrbit.yaw, pitch: this.userOrbit.pitch };
-      this.world.renderer.domElement.style.cursor = 'grabbing';
+      this.setCursor('grabbing');
       return;
     }
     const st = hit.sticker;
@@ -380,9 +407,7 @@ export class Playground {
       this.setInvite(null);
       this.onFirstPeel?.();
     }
-    this.world.renderer.domElement.style.cursor = 'grabbing';
-    // Bring it to the top of whatever it's stacked with.
-    this.raise(st);
+    this.setCursor('grabbing');
 
     if (st.mode === 'dropping' || st.mode === 'carried') {
       // Caught mid-air.
@@ -393,10 +418,10 @@ export class Playground {
     }
 
     const edge = edgeInfo(st.src, hit.x, hit.y);
-    const zone = Math.min(1.25, 0.32 * Math.min(st.src.width, st.src.height));
     m.r = curlRadius(st);
-    if (st.mode === 'peeling' || edge.dist < zone) {
-      // Grab an edge: start peeling from exactly where you pressed.
+    if (st.mode === 'peeling' || edge.dist < edgeZone(st)) {
+      // Grab an edge: start peeling from exactly where you pressed. (Grabbing
+      // a sticker that's still rolling back resumes the same peel.)
       if (st.mode !== 'peeling') {
         m.grab = { x: hit.x, y: hit.y };
         m.inward = { x: edge.nx, y: edge.ny };
@@ -404,12 +429,11 @@ export class Playground {
         m.targetVel = { x: 0, y: 0 };
         m.lastF = -Infinity;
       }
-      m.releasing = false;
       st.mode = 'peeling';
       this.sfx.tick();
     } else {
       // Grabbed from the middle: pluck it straight off.
-      this.liftOff(st, hit.x, hit.y, 0.4);
+      this.liftOff(st, hit.x, hit.y);
     }
   };
 
@@ -428,29 +452,23 @@ export class Playground {
     this.setNdc(e);
     if (this.orbitDrag) {
       this.orbitDrag = null;
-      this.world.renderer.domElement.style.cursor = '';
+      this.setCursor('');
       return;
     }
     if (this.clickToDrop) return;
     const st = this.held;
     this.held = null;
-    this.world.renderer.domElement.style.cursor = '';
-    if (!st) return;
-    const m = this.motion.get(st)!;
-    if (st.mode === 'peeling') {
-      m.releasing = true;
-    } else if (st.mode === 'carried') {
-      this.drop(st);
-    }
+    this.setCursor('');
+    // A peel that didn't get far enough rolls back by itself (see stepPeel).
+    if (st?.mode === 'carried') this.drop(st);
     if (e.pointerType === 'touch') this.hasPointer = false;
   };
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
     const st = this.held;
-    if (st && st.mode === 'carried') {
-      const m = this.motion.get(st)!;
-      m.yawGoal -= clamp(e.deltaY, -60, 60) * 0.006;
+    if (st?.mode === 'carried') {
+      this.motion.get(st)!.yawGoal -= clamp(e.deltaY, -60, 60) * 0.006;
       return;
     }
     // Otherwise the wheel tilts the view.
@@ -460,69 +478,66 @@ export class Playground {
 
   private onKey = (e: KeyboardEvent) => {
     const st = this.held;
-    if (!st || st.mode !== 'carried') return;
-    const m = this.motion.get(st)!;
-    if (e.key === 'q' || e.key === 'Q' || e.key === 'ArrowLeft') m.yawGoal += Math.PI / 12;
-    if (e.key === 'e' || e.key === 'E' || e.key === 'r' || e.key === 'R' || e.key === 'ArrowRight') m.yawGoal -= Math.PI / 12;
+    if (st?.mode !== 'carried') return;
+    const step = Math.PI / 12;
+    const key = e.key.toLowerCase();
+    if (key === 'q' || key === 'arrowleft') this.motion.get(st)!.yawGoal += step;
+    if (key === 'e' || key === 'r' || key === 'arrowright') this.motion.get(st)!.yawGoal -= step;
   };
+
+  private setCursor(c: string) {
+    this.world.renderer.domElement.style.cursor = c;
+  }
 
   private updateHover() {
     const hit = this.pick();
-    if (!hit || hit.sticker.mode !== 'stuck') {
+    this.setCursor(hit ? 'grab' : '');
+    if (!hit || hit.sticker.mode !== 'stuck' || hit.sticker === this.invite) {
       this.setHover(null);
-      this.world.renderer.domElement.style.cursor = hit ? 'grab' : '';
       return;
     }
     const st = hit.sticker;
-    this.world.renderer.domElement.style.cursor = 'grab';
     const edge = edgeInfo(st.src, hit.x, hit.y);
-    const zone = Math.min(1.25, 0.32 * Math.min(st.src.width, st.src.height));
-    if (edge.dist > zone || st === this.invite) {
+    if (edge.dist > edgeZone(st)) {
       this.setHover(null);
       return;
     }
     // Lift the edge a little under the cursor, like it's eager to come off.
-    const m = this.motion.get(st)!;
-    if (!this.hovered || this.hovered.sticker !== st) {
+    if (this.hovered?.sticker !== st) {
       this.setHover({ sticker: st, grab: { x: hit.x, y: hit.y }, inward: { x: edge.nx, y: edge.ny } });
     } else {
       // Slide the lifted spot along the edge as you move.
+      const m = this.motion.get(st)!;
       m.grab = lerp2(m.grab, { x: hit.x, y: hit.y }, 0.35);
-      m.inward = norm2(lerp2(m.inward, { x: edge.nx, y: edge.ny }, 0.35));
+      m.inward = normalize2(lerp2(m.inward, { x: edge.nx, y: edge.ny }, 0.35));
+      this.liftEdge(st, m, HOVER_REACH);
     }
   }
 
   private setHover(h: { sticker: Sticker; grab: Vec2; inward: Vec2 } | null) {
-    if (this.hovered && (!h || this.hovered.sticker !== h.sticker)) {
+    if (this.hovered && this.hovered.sticker !== h?.sticker) {
       const m = this.motion.get(this.hovered.sticker);
       if (m) m.hoverGoal = 0;
     }
     this.hovered = h;
-    if (h) {
-      const m = this.motion.get(h.sticker)!;
-      if (m.hover < 0.02) {
-        m.grab = h.grab;
-        m.inward = h.inward;
-      }
-      m.r = curlRadius(h.sticker);
-      m.hoverGoal = 1;
+    if (!h) return;
+    const m = this.motion.get(h.sticker)!;
+    if (m.hover < 0.02) {
+      m.grab = h.grab;
+      m.inward = h.inward;
     }
+    m.r = curlRadius(h.sticker);
+    m.hoverGoal = 1;
   }
 
   // ---------------------------------------------------------------- state changes
 
-  private raise(st: Sticker) {
-    // Stuck stickers get re-layered on drop; nothing to do until then.
-    void st;
-  }
-
   /** Pop free of the surface and into your hand. */
-  private liftOff(st: Sticker, gx: number, gy: number, popStrength: number) {
+  private liftOff(st: Sticker, gx: number, gy: number) {
     const m = this.motion.get(st)!;
-    const p = st.worldPoint(gx, gy);
+    st.pivot.copy(st.worldPoint(gx, gy, this.hit));
     st.grab.set(gx, gy);
     st.mode = 'carried';
-    st.pivot.copy(p);
     st.tilt.identity();
     m.vel.set(0, 0, 0);
     m.thetaVel = 0;
@@ -535,15 +550,13 @@ export class Playground {
     st.bend = 0;
     st.dirty = true;
     this.sfx.pop();
-    void popStrength;
     this.onChange?.();
   }
 
   /** Change the held point of a flying sticker without it jumping. */
   private retarget(st: Sticker, gx: number, gy: number) {
-    const p = st.worldPoint(gx, gy);
+    st.pivot.copy(st.worldPoint(gx, gy, this.hit));
     st.grab.set(gx, gy);
-    st.pivot.copy(p);
     st.bendReach = farthest(st, gx, gy);
     st.dirty = true;
   }
@@ -553,41 +566,41 @@ export class Playground {
    * whatever hangs off that surface wraps over its edge.
    */
   footprint(st: Sticker, cx: number, cz: number) {
-    const c = Math.cos(st.yaw);
-    const s = Math.sin(st.yaw);
     const pts = st.src.points;
     let best: Surface | null = null;
     const stride = Math.max(2, Math.floor(pts.length / 2 / 60) * 2);
     for (let i = 0; i < pts.length; i += stride) {
-      const hit = this.world.surfaceAt(cx + c * pts[i] + s * pts[i + 1], cz - s * pts[i] + c * pts[i + 1]);
+      const w = rotateToWorld(pts[i], pts[i + 1], st.yaw, v2);
+      const hit = this.world.surfaceAt(cx + w.x, cz + w.y);
       if (hit && (!best || hit.top > best.top)) best = hit;
     }
     return { top: best?.top ?? 0, surface: best };
   }
 
-  private drop(st: Sticker) {
-    const m = this.motion.get(st)!;
-    // Where will it land? Centre under the current pose.
-    const c = Math.cos(st.yaw);
-    const s = Math.sin(st.yaw);
-    const cx = st.pivot.x - (c * st.grab.x + s * st.grab.y);
-    const cz = st.pivot.z - (-s * st.grab.x + c * st.grab.y);
-    const { top: h0, surface: surf } = this.footprint(st, cx, cz);
-    // Stack on top of any stickers already there.
-    let layer = LAYER * 0.5;
+  /** Stacking height for a sticker about to rest at (cx, cz) on a surface at `top`. */
+  private layerAt(st: Sticker, cx: number, cz: number, top: number) {
+    let layer = LAYER / 2;
     const rad = st.radius() * 0.8;
     for (const o of this.stickers) {
       if (o === st || o.mode !== 'stuck') continue;
-      if (Math.abs(o.baseY - o.layer - h0) > 0.05) continue;
+      if (Math.abs(o.baseY - o.layer - top) > 0.05) continue;
       if (Math.hypot(o.x - cx, o.z - cz) < rad + o.radius() * 0.8) layer = Math.max(layer, o.layer + LAYER);
     }
-    st.x = cx;
-    st.z = cz;
-    st.layer = layer;
-    st.baseY = h0 + layer;
-    st.surface = surf?.name ?? 'desk';
-    st.support = surf;
+    return layer;
+  }
+
+  private drop(st: Sticker) {
+    const m = this.motion.get(st)!;
+    const c = st.centreUnderPivot(this.centre);
+    const { top, surface } = this.footprint(st, c.x, c.y);
+    st.x = c.x;
+    st.z = c.y;
+    st.layer = this.layerAt(st, c.x, c.y, top);
+    st.baseY = top + st.layer;
+    st.surface = surface?.name ?? 'desk';
+    st.support = surface;
     st.mode = 'dropping';
+    m.thetaVel = 0;
     m.dropT = 0;
     m.dropFrom = st.pivot.y;
     m.slapped = false;
@@ -597,39 +610,9 @@ export class Playground {
   // ---------------------------------------------------------------- per frame
 
   update(dt: number) {
-
-    // Camera: user tilt plus a little parallax from the pointer (or the
-    // phone's gyro) so the foil always has something to play with.
-    let px = this.hasPointer && !this.orbitDrag ? this.ndc.x : 0;
-    let py = this.hasPointer && !this.orbitDrag ? this.ndc.y : 0;
-    if (this.gyro) {
-      px = this.gyro.x;
-      py = this.gyro.y;
-    }
-    // Let go of a tilt and the desk swings back, like a lazy susan.
-    if (!this.orbitDrag) {
-      const k = 1 - Math.exp(-dt * 2.2);
-      this.userOrbit.yaw -= this.userOrbit.yaw * k;
-      this.userOrbit.pitch -= this.userOrbit.pitch * k;
-      if (Math.abs(this.userOrbit.yaw) + Math.abs(this.userOrbit.pitch) < 5e-5) this.userOrbit.yaw = this.userOrbit.pitch = 0;
-    }
-    // Opening shot: start low and turned, settle into the top-down view.
-    let introYaw = 0;
-    let introPitch = 0;
-    if (this.intro < 1) {
-      this.intro = Math.min(1, this.intro + dt / 2.4);
-      const e = 1 - easeInOut(this.intro);
-      introYaw = 0.5 * e;
-      introPitch = -0.5 * e;
-    }
-    this.world.orbit.tYaw = this.userOrbit.yaw - px * 0.05 + introYaw;
-    this.world.orbit.tPitch = this.userOrbit.pitch - py * 0.035 + introPitch;
-    if (this.intro < 1) {
-      this.world.orbit.yaw = this.world.orbit.tYaw;
-      this.world.orbit.pitch = this.world.orbit.tPitch;
-      this.world.kick(0);
-    }
-    this.world.tick(dt);
+    const now = performance.now();
+    if (this.tweens.length) this.tweens = this.tweens.filter((t) => t(now));
+    this.updateView(dt);
 
     for (const st of this.stickers) {
       const m = this.motion.get(st)!;
@@ -637,7 +620,8 @@ export class Playground {
       const before = st.dirty ? null : st.pose(this.poseA);
       switch (st.mode) {
         case 'stuck':
-          this.stepStuck(st, m, dt);
+          if (st === this.invite) this.stepInvite(st, m, dt);
+          else this.stepHover(st, m, dt);
           break;
         case 'peeling':
           this.stepPeel(st, m, dt);
@@ -654,49 +638,63 @@ export class Playground {
     }
   }
 
-  private stepStuck(st: Sticker, m: Motion, dt: number) {
-    if (m.hover < 0.001 && m.hoverGoal === 0) {
-      if (Math.abs(st.peel.theta) > 0) {
-        st.peel.theta = 0;
-        st.dirty = true;
-      }
-      return;
+  /** Camera: intro shot, user tilt, and parallax from the pointer or gyro. */
+  private updateView(dt: number) {
+    let px = this.hasPointer && !this.orbitDrag ? this.ndc.x : 0;
+    let py = this.hasPointer && !this.orbitDrag ? this.ndc.y : 0;
+    if (this.gyro) {
+      px = this.gyro.x;
+      py = this.gyro.y;
     }
-    // Under-damped so the corner wobbles a little as it lifts.
-    const k = 260;
-    const c = 2 * 0.5 * Math.sqrt(k);
-    let goal = m.hoverGoal;
-    let reach = 0.12;
-    if (st === this.invite && m.hover > 0.95) {
-      // Every few seconds the corner flutters as if someone breathed on it.
+    // Let go of a tilt and the desk swings back, like a lazy susan.
+    if (!this.orbitDrag) {
+      const k = 1 - Math.exp(-dt * 2.2);
+      this.userOrbit.yaw -= this.userOrbit.yaw * k;
+      this.userOrbit.pitch -= this.userOrbit.pitch * k;
+      if (Math.abs(this.userOrbit.yaw) + Math.abs(this.userOrbit.pitch) < 3e-4) this.userOrbit.yaw = this.userOrbit.pitch = 0; // ~half a pixel
+    }
+    // Opening shot: start low and turned, settle into the top-down view.
+    let introYaw = 0;
+    let introPitch = 0;
+    if (this.intro < 1) {
+      this.intro = Math.min(1, this.intro + dt / 2.4);
+      const e = 1 - easeInOutCubic(this.intro);
+      introYaw = 0.5 * e;
+      introPitch = -0.5 * e;
+    }
+    const orbit = this.world.orbit;
+    orbit.tYaw = this.userOrbit.yaw - px * 0.05 + introYaw;
+    orbit.tPitch = this.userOrbit.pitch - py * 0.035 + introPitch;
+    if (this.intro < 1) this.world.kick(orbit.tYaw - orbit.yaw, orbit.tPitch - orbit.pitch);
+    this.world.tick(dt);
+  }
+
+  /** Hovering near an edge lifts it a little; moving away lets it settle. */
+  private stepHover(st: Sticker, m: Motion, dt: number) {
+    if (springHover(m, dt)) this.liftEdge(st, m, HOVER_REACH);
+  }
+
+  /** The opening screen's corner: lifts, then flutters every few seconds. */
+  private stepInvite(st: Sticker, m: Motion, dt: number) {
+    if (m.hover < 0.95) {
+      springHover(m, dt);
+    } else {
       // Driven directly (not through the spring) so between flutters it is
       // perfectly still and the idle scene costs nothing to draw.
-      const clock = (performance.now() - this.inviteStart) / 1000;
-      const period = clock < 30 ? 5 : 12;
-      const t = clock % period;
-      const flutter = t < 1 ? Math.sin(t * 15) * Math.exp(-t * 5) * 0.9 : 0;
+      const flutter = inviteFlutter(this.inviteClock());
       if (flutter === 0 && m.hover === 1) return;
       m.hover = 1 + flutter;
       m.hoverVel = 0;
-      reach = 0.4;
-    } else if (st === this.invite) {
-      reach = 0.4;
     }
-    // Settled: snap to rest so an idle scene draws nothing at all.
-    if (st === this.invite && m.hover > 0.95) {
-      // handled above
-    } else if (Math.abs(goal - m.hover) < 2e-3 && Math.abs(m.hoverVel) < 2e-2) {
-      if (m.hover === goal && m.hoverVel === 0) return;
-      m.hover = goal;
-      m.hoverVel = 0;
-    } else {
-      m.hoverVel += (k * (goal - m.hover) - c * m.hoverVel) * dt;
-      m.hover += m.hoverVel * dt;
-    }
-    const a = Math.max(0, m.hover);
+    this.liftEdge(st, m, INVITE_REACH);
+  }
+
+  /** Shape a stuck sticker as a small peel at its grab point. */
+  private liftEdge(st: Sticker, m: Motion, reach: number) {
+    const a = Math.max(0, m.hover) * reach;
     const sol = solvePeel({
       grab: m.grab,
-      target: { x: m.grab.x + m.inward.x * reach * a, y: m.grab.y + m.inward.y * reach * a },
+      target: { x: m.grab.x + m.inward.x * a, y: m.grab.y + m.inward.y * a },
       inward: m.inward,
       r: m.r,
     });
@@ -705,14 +703,14 @@ export class Playground {
   }
 
   private stepPeel(st: Sticker, m: Motion, dt: number) {
-    let goal: Vec2;
     const holding = this.held === st;
+    let goal = m.grab;
     if (holding) {
-      const hitY = st.baseY + Math.max(0, peelGrabZ(st, m));
-      const p = this.rayToPlane(hitY, this.hit);
+      // Aim at the height the grabbed point has already been lifted to, so
+      // it stays exactly under the cursor.
+      const z = deform(m.grab.x, m.grab.y, st.peel, scratch).z;
+      const p = this.rayToPlane(st.baseY + Math.max(0, z), this.hit);
       goal = p ? st.toLocal(p.x, p.z) : m.target;
-    } else {
-      goal = m.grab;
     }
     // Spring the target: snappy while held, bouncy when let go so the flap
     // slaps back down.
@@ -730,43 +728,33 @@ export class Playground {
 
     // Smooth the fold direction so switching between "fold back" and
     // "pull away" never snaps.
-    const blend = 1 - Math.exp(-dt * 30);
-    let dx = st.peel.dx + (sol.dx - st.peel.dx) * blend;
-    let dy = st.peel.dy + (sol.dy - st.peel.dy) * blend;
-    const l = Math.hypot(dx, dy) || 1;
-    dx /= l;
-    dy /= l;
-    if (Math.abs(st.peel.theta) < 1e-3) {
-      dx = sol.dx;
-      dy = sol.dy;
+    let dx = sol.dx;
+    let dy = sol.dy;
+    if (Math.abs(st.peel.theta) >= 1e-3) {
+      const blend = 1 - Math.exp(-dt * 30);
+      const d = normalize2({ x: st.peel.dx + (sol.dx - st.peel.dx) * blend, y: st.peel.dy + (sol.dy - st.peel.dy) * blend });
+      dx = d.x;
+      dy = d.y;
     }
     // Keep the grabbed point consistent with the smoothed direction.
-    const ug = m.grab.x * dx + m.grab.y * dy;
-    const ugSol = m.grab.x * sol.dx + m.grab.y * sol.dy;
-    const f = ug + (sol.f - ugSol);
+    const f = m.grab.x * dx + m.grab.y * dy + (sol.f - (m.grab.x * sol.dx + m.grab.y * sol.dy));
     Object.assign(st.peel, { dx, dy, f, r: sol.r, theta: sol.theta });
     st.dirty = true;
 
-    const ext = extent(st.src, dx, dy);
-    const peeled = (f - ext.lo) / (ext.hi - ext.lo);
-    if (holding) {
-      const speed = m.lastF === -Infinity ? 0 : (f - m.lastF) / Math.max(dt, 1e-3);
-      this.sfx.crackle(speed, dt);
-    }
+    const speed = m.lastF === -Infinity ? 0 : (f - m.lastF) / Math.max(dt, 1e-3);
     m.lastF = f;
-
     if (holding) {
+      this.sfx.crackle(speed, dt);
+      const ext = extent(st.src, dx, dy);
+      const peeled = (f - ext.lo) / (ext.hi - ext.lo);
       const tension = sol.outward ? sol.tension : 0;
       const popAt = Math.max(0.9, 0.24 * Math.min(st.src.width, st.src.height));
-      if (peeled > 0.7 || tension > popAt) {
-        this.liftOff(st, m.grab.x, m.grab.y, peeled);
-      }
+      if (peeled > POP_FRACTION || tension > popAt) this.liftOff(st, m.grab.x, m.grab.y);
     } else if (Math.hypot(m.target.x - m.grab.x, m.target.y - m.grab.y) < 0.004 && Math.hypot(m.targetVel.x, m.targetVel.y) < 0.05) {
+      // Rolled all the way back down.
       st.mode = 'stuck';
       st.peel.theta = 0;
-      m.hover = 0;
-      m.hoverVel = 0;
-      m.hoverGoal = 0;
+      m.hover = m.hoverVel = m.hoverGoal = 0;
       st.dirty = true;
     }
   }
@@ -776,7 +764,7 @@ export class Playground {
       const p = this.rayToPlane(this.carryHeight(), this.hit);
       if (p) m.goal.copy(p);
     }
-    this.springPivot(st, m, dt, 520, 0.85);
+    springVec(st.pivot, m.vel, m.goal, dt, 520, 0.85);
 
     // Unfold: the curl springs out flat with a little overshoot.
     const kt = 300;
@@ -792,89 +780,64 @@ export class Playground {
     m.bendVel += (kb * (droop - st.bend) - cb * m.bendVel) * dt;
     st.bend += m.bendVel * dt;
 
-    // Swing: the body trails behind the held point like a pendulum, and the
-    // whole thing leans into the direction of travel.
-    const gl = Math.hypot(st.grab.x, st.grab.y);
-    const acc = m.vel;
-    if (gl > 0.4) {
-      const c = Math.cos(st.yaw);
-      const s = Math.sin(st.yaw);
-      // Vector from pivot to the centre, in world XZ.
-      const rx = -(c * st.grab.x + s * st.grab.y);
-      const rz = -(-s * st.grab.x + c * st.grab.y);
-      const torque = (rz * acc.x - rx * acc.z) * 0.0026;
-      m.yawVel += torque;
+    // Swing: held off-centre, the body trails behind the held point like a
+    // pendulum. Torque = r x v, with r from the pivot to the centre.
+    if (Math.hypot(st.grab.x, st.grab.y) > 0.4) {
+      const r = rotateToWorld(-st.grab.x, -st.grab.y, st.yaw, v2);
+      m.yawVel += (r.y * m.vel.x - r.x * m.vel.z) * 0.0026;
     }
     const ky = 60;
     const cy = 2 * 0.55 * Math.sqrt(ky);
     m.yawVel += (ky * (m.yawGoal - st.yaw) - cy * m.yawVel) * dt;
     st.yaw += m.yawVel * dt;
 
-    const v = m.vel;
-    const speed = Math.hypot(v.x, v.z);
-    const ang = Math.min(0.32, speed * 0.0042);
+    // ...and the whole thing leans into the direction of travel.
+    const speed = Math.hypot(m.vel.x, m.vel.z);
     const target = this.tiltGoal.identity();
-    if (speed > 1e-3) target.setFromAxisAngle(this.tiltAxis.set(v.z / speed, 0, -v.x / speed), ang);
+    if (speed > 1e-3) {
+      target.setFromAxisAngle(this.tiltAxis.set(m.vel.z / speed, 0, -m.vel.x / speed), Math.min(0.32, speed * 0.0042));
+    }
     st.tilt.slerp(target, 1 - Math.exp(-dt * 10));
     st.dirty = true;
   }
 
   private stepDrop(st: Sticker, m: Motion, dt: number) {
     m.dropT += dt;
-    const T1 = 0.12;
     const t = m.dropT;
-    if (t < T1) {
-      const e = (t / T1) * (t / T1);
+    if (t < DROP_FALL) {
+      // Falls (accelerating) while the edges spring up...
+      const e = (t / DROP_FALL) ** 2;
       st.pivot.y = m.dropFrom + (st.baseY - m.dropFrom) * e;
-      // Edges spring up as the middle comes down.
-      st.bend = st.bend + (0.42 - st.bend) * Math.min(1, dt * 30);
+      st.bend += (SLAP_LIFT - st.bend) * Math.min(1, dt * 30);
+      st.peel.theta *= Math.max(0, 1 - dt * 25);
     } else {
+      // ...then the edges slap down and wobble flat.
       st.pivot.y = st.baseY;
+      st.peel.theta = 0;
       if (!m.slapped) {
         m.slapped = true;
-        const speed = (m.dropFrom - st.baseY) / T1;
+        const speed = (m.dropFrom - st.baseY) / DROP_FALL;
         this.sfx.slap(0.4 + speed / 40);
         // A tiny camera kick sells the impact.
-        this.world.kick(-0.004);
-        if ('vibrate' in navigator) navigator.vibrate?.(12);
+        this.world.kick(0, -0.004);
+        navigator.vibrate?.(12);
       }
-      const u = t - T1;
-      st.bend = 0.42 * Math.exp(-u / 0.045) * Math.cos((u / 0.1) * Math.PI * 2);
+      const u = t - DROP_FALL;
+      st.bend = SLAP_LIFT * Math.exp(-u / 0.045) * Math.cos((u / 0.1) * Math.PI * 2);
     }
     st.tilt.slerp(this.identity, Math.min(1, dt * 25));
-    m.thetaVel *= 0.7;
-    st.peel.theta *= Math.max(0, 1 - dt * 25);
-    if (t > T1) st.peel.theta = 0;
-    // Settle the spin onto the goal.
     st.yaw += (m.yawGoal - st.yaw) * Math.min(1, dt * 20);
     st.dirty = true;
 
-    if (t > T1 + 0.3) {
-      const c = Math.cos(st.yaw);
-      const s = Math.sin(st.yaw);
-      st.x = st.pivot.x - (c * st.grab.x + s * st.grab.y);
-      st.z = st.pivot.z - (-s * st.grab.x + c * st.grab.y);
+    if (t > DROP_FALL + DROP_SETTLE) {
+      const c = st.centreUnderPivot(this.centre);
+      st.x = c.x;
+      st.z = c.y;
       st.mode = 'stuck';
       st.bend = 0;
       st.tilt.identity();
-      st.peel.theta = 0;
-      m.hover = 0;
-      m.hoverVel = 0;
-      m.hoverGoal = 0;
-      st.dirty = true;
+      m.hover = m.hoverVel = m.hoverGoal = 0;
       this.onChange?.();
-    }
-  }
-
-  private springPivot(st: Sticker, m: Motion, dt: number, k: number, zeta: number) {
-    const c = 2 * zeta * Math.sqrt(k);
-    const steps = 3;
-    const h = dt / steps;
-    for (let i = 0; i < steps; i++) {
-      m.vel.x += (k * (m.goal.x - st.pivot.x) - c * m.vel.x) * h;
-      m.vel.y += (k * (m.goal.y - st.pivot.y) - c * m.vel.y) * h;
-      m.vel.z += (k * (m.goal.z - st.pivot.z) - c * m.vel.z) * h;
-      st.pivot.addScaledVector(m.vel, h);
     }
   }
 
@@ -884,13 +847,20 @@ export class Playground {
     return top + CARRY_LIFT;
   }
 
-  // ---------------------------------------------------------------- utilities
+  private inviteClock() {
+    return (performance.now() - this.inviteStart) / 1000;
+  }
+
+  // ---------------------------------------------------------------- queries
+
+  get sheetName() {
+    return this.sheet?.name ?? '';
+  }
 
   /** Is anything mid-gesture or mid-animation? (If not, the loop may sleep.) */
   busy() {
-    if (this.held || this.orbitDrag || this.intro < 1) return true;
-    for (const s of this.stickers) if (s.mode !== 'stuck') return true;
-    return false;
+    if (this.held || this.orbitDrag || this.intro < 1 || this.tweens.length) return true;
+    return this.stickers.some((s) => s.mode !== 'stuck');
   }
 
   /** Is the user dragging something right now? (Those frames get full rate.) */
@@ -901,9 +871,9 @@ export class Playground {
   /** Seconds until something wants to animate on its own (the invite flutter). */
   nextWakeIn(): number | null {
     if (!this.invite) return null;
-    const clock = (performance.now() - this.inviteStart) / 1000;
-    const period = clock < 30 ? 5 : 12;
-    return period - (clock % period);
+    const t = this.inviteClock();
+    const period = flutterPeriod(t);
+    return period - (t % period);
   }
 
   /** World position of the inviting corner (for the "peel me" note). */
@@ -914,34 +884,36 @@ export class Playground {
     return st.worldPoint(m.grab.x, m.grab.y, out);
   }
 
-  /** Everything off the notebook flies away, one after another. */
-  peelAll() {
-    this.wake();
-    const sheet = this.sheet?.name;
-    const off = this.stickers.filter((s) => s.surface !== sheet && s.mode === 'stuck').sort((a, b) => b.layer - a.layer);
-    off.forEach((st, i) => {
-      window.setTimeout(() => {
-        if (!this.stickers.includes(st) || st.mode !== 'stuck') return;
-        const p = st.src.points;
-        const k = Math.floor(Math.random() * (p.length / 2)) * 2;
-        this.liftOff(st, p[k], p[k + 1], 1);
-        const m = this.motion.get(st)!;
-        const away = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
-        const start = performance.now();
-        const fly = () => {
-          const t = (performance.now() - start) / 1000;
-          m.goal.copy(st.pivot).addScaledVector(away, 6).setY(st.pivot.y + 3 + t * 30);
-          this.wake();
-          if (t > 0.9) this.remove(st);
-          else requestAnimationFrame(fly);
-        };
-        fly();
-      }, i * 70);
-    });
-  }
+  // ---------------------------------------------------------------- actions
 
-  getSheetName() {
-    return this.sheet?.name ?? '';
+  /** Everything off the sheet flies away, one after another. */
+  peelAll() {
+    const off = this.stickers.filter((s) => s.surface !== this.sheetName && s.mode === 'stuck').sort((a, b) => b.layer - a.layer);
+    const t0 = performance.now();
+    off.forEach((st, i) => {
+      const start = t0 + i * 70;
+      let away: THREE.Vector3 | null = null;
+      this.animate((now) => {
+        if (now < start) return true;
+        if (!this.stickers.includes(st)) return false;
+        if (!away) {
+          if (st.mode !== 'stuck') return false;
+          const p = st.src.points;
+          const k = Math.floor(Math.random() * (p.length / 2)) * 2;
+          this.liftOff(st, p[k], p[k + 1]);
+          away = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+        }
+        const t = (now - start) / 1000;
+        this.motion
+          .get(st)!
+          .goal.copy(st.pivot)
+          .addScaledVector(away, 6)
+          .setY(st.pivot.y + 3 + t * 30);
+        if (t <= 0.9) return true;
+        this.remove(st);
+        return false;
+      });
+    });
   }
 
   /**
@@ -954,8 +926,15 @@ export class Playground {
     const nb = this.world.notebookSurface;
     const touch = this.lastPointerType === 'touch' || !this.hasPointer;
     const at = (!touch && this.rayToPlane(carry, new THREE.Vector3())) || new THREE.Vector3(nb.x, carry, nb.z);
+    const m = this.motion.get(st)!;
     st.yaw = nb.yaw + (Math.random() - 0.5) * 0.3;
-    this.hand(st, at);
+    st.mode = 'carried';
+    st.grab.set(0, 0);
+    st.pivot.copy(at);
+    st.bendReach = farthest(st, 0, 0);
+    st.dirty = true;
+    m.goal.copy(at);
+    m.yawGoal = st.yaw;
     this.sfx.pop();
     if (touch) {
       st.pivot.y = carry + 6;
@@ -964,17 +943,6 @@ export class Playground {
       this.held = st;
       this.clickToDrop = true;
     }
-  }
-
-  private hand(st: Sticker, at: THREE.Vector3) {
-    const m = this.motion.get(st)!;
-    st.mode = 'carried';
-    st.grab.set(0, 0);
-    st.pivot.copy(at);
-    st.bendReach = farthest(st, 0, 0);
-    m.goal.copy(at);
-    m.yawGoal = st.yaw;
-    st.dirty = true;
   }
 }
 
@@ -986,7 +954,6 @@ function blankMotion(): Motion {
     targetVel: { x: 0, y: 0 },
     lastF: -Infinity,
     r: 0.3,
-    releasing: false,
     hover: 0,
     hoverVel: 0,
     hoverGoal: 0,
@@ -1002,21 +969,59 @@ function blankMotion(): Motion {
   };
 }
 
+/**
+ * Under-damped spring for the hover lift, so a corner wobbles a little as it
+ * comes up. Snaps to rest when close; returns false if nothing changed.
+ */
+function springHover(m: Motion, dt: number) {
+  const goal = m.hoverGoal;
+  if (Math.abs(goal - m.hover) < 2e-3 && Math.abs(m.hoverVel) < 2e-2) {
+    if (m.hover === goal && m.hoverVel === 0) return false;
+    m.hover = goal;
+    m.hoverVel = 0;
+    return true;
+  }
+  const k = 260;
+  const c = 2 * 0.5 * Math.sqrt(k);
+  m.hoverVel += (k * (goal - m.hover) - c * m.hoverVel) * dt;
+  m.hover += m.hoverVel * dt;
+  return true;
+}
+
+/** Damped spring on a vector, sub-stepped for stiffness. */
+function springVec(x: THREE.Vector3, v: THREE.Vector3, goal: THREE.Vector3, dt: number, k: number, zeta: number) {
+  const c = 2 * zeta * Math.sqrt(k);
+  const steps = 3;
+  const h = dt / steps;
+  for (let i = 0; i < steps; i++) {
+    v.x += (k * (goal.x - x.x) - c * v.x) * h;
+    v.y += (k * (goal.y - x.y) - c * v.y) * h;
+    v.z += (k * (goal.z - x.z) - c * v.z) * h;
+    x.addScaledVector(v, h);
+  }
+}
+
+/** Every 5s for the first half minute, then every 12s. */
+function flutterPeriod(t: number) {
+  return t < 30 ? 5 : 12;
+}
+
+/** A one-second decaying wobble at the start of each period, else 0. */
+function inviteFlutter(t: number) {
+  const u = t % flutterPeriod(t);
+  return u < 1 ? Math.sin(u * 15) * Math.exp(-u * 5) * 0.9 : 0;
+}
+
+/** How far in from the die line (cm) a press counts as grabbing the edge. */
+function edgeZone(st: Sticker) {
+  return Math.min(1.25, 0.32 * Math.min(st.src.width, st.src.height));
+}
+
 function curlRadius(st: Sticker) {
   return clamp(0.075 * Math.min(st.src.width, st.src.height), 0.2, 0.36);
 }
 
-function peelGrabZ(st: Sticker, m: Motion) {
-  const p = st.peel;
-  if (Math.abs(p.theta) < 1e-4) return 0;
-  const u = m.grab.x * p.dx + m.grab.y * p.dy;
-  const dist = p.f - u;
-  if (dist <= 0) return 0;
-  const arc = p.r * p.theta;
-  if (dist <= arc) return p.r * (1 - Math.cos(dist / p.r));
-  return p.r * (1 - Math.cos(p.theta)) + (dist - arc) * Math.sin(p.theta);
-}
-
+/** Distance from the held point to the furthest part of the sticker. */
 function farthest(st: Sticker, gx: number, gy: number) {
   const p = st.src.points;
   let best = 0.5;
@@ -1027,21 +1032,4 @@ function farthest(st: Sticker, gx: number, gy: number) {
 function samePose(a: Float64Array, b: Float64Array) {
   for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 1e-6) return false;
   return true;
-}
-
-function easeInOut(t: number) {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function clamp(x: number, a: number, b: number) {
-  return Math.min(b, Math.max(a, x));
-}
-
-function lerp2(a: Vec2, b: Vec2, t: number): Vec2 {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-
-function norm2(a: Vec2): Vec2 {
-  const l = Math.hypot(a.x, a.y) || 1;
-  return { x: a.x / l, y: a.y / l };
 }
