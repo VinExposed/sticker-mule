@@ -51,7 +51,7 @@ export function startLoop(hooks: LoopHooks) {
     requestAnimationFrame(frame);
   };
 
-  for (const ev of ['pointermove', 'pointerdown', 'pointerup', 'pointerout', 'wheel', 'keydown', 'resize', 'deviceorientation']) {
+  for (const ev of ['pointermove', 'pointerdown', 'pointerup', 'pointerout', 'wheel', 'keydown', 'resize']) {
     window.addEventListener(ev, wake, { passive: true, capture: true });
   }
   wake();

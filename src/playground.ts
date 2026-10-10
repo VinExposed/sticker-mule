@@ -39,6 +39,9 @@ interface Sheet {
   dispose(): void;
 }
 
+/** Every pack's sheet is a surface named with this prefix. */
+const SHEET_PREFIX = 'sheet-';
+
 /** A scripted animation step; return false when finished. */
 type Tween = (now: number) => boolean;
 
@@ -89,6 +92,8 @@ export class Playground {
   private ndc = new THREE.Vector2(0, 0);
   private hasPointer = false;
   private lastPointerType = 'mouse';
+  /** The one pointer driving the current gesture; other fingers are ignored. */
+  private activePointer: number | null = null;
   private held: Sticker | null = null;
   /** A freshly made sticker follows the mouse until you click (no drag). */
   private clickToDrop = false;
@@ -99,6 +104,8 @@ export class Playground {
   private userOrbit = { yaw: 0, pitch: 0 };
   private intro = 0;
   private gyro: { x: number; y: number; base: { b: number; g: number } | null } | null = null;
+  private gyroRequested = false;
+  private reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // The sticker with its corner up on the opening screen.
   private invite: Sticker | null = null;
@@ -117,6 +124,7 @@ export class Playground {
     readonly sfx: Sfx,
   ) {
     this.maxAniso = world.renderer.capabilities.getMaxAnisotropy();
+    if (this.reduceMotion) this.intro = 1;
     const el = world.renderer.domElement;
     el.style.touchAction = 'none';
     el.addEventListener('pointerdown', this.onDown);
@@ -176,6 +184,8 @@ export class Playground {
     this.wake();
     this.packNo++;
     const old = this.sheet;
+    // Nobody has peeled anything yet: keep inviting on the new sheet.
+    const reinvite = !!this.invite;
     if (old) {
       // Old sheet and whatever's left on it slide off the desk.
       const leftovers = this.stickers.filter((s) => s.surface === old.name && s.mode === 'stuck');
@@ -184,7 +194,7 @@ export class Playground {
     }
     const slots = layoutPack(sources, seed);
     const built = buildSheet(slots, this.packNo);
-    const name = `sheet-${this.packNo}`;
+    const name = SHEET_PREFIX + this.packNo;
     const surface: Surface = { name, ...this.sheetPose, w: SHEET.w, d: SHEET.d, top: SHEET.t };
     this.world.surfaces.push(surface);
     this.world.scene.add(built.mesh);
@@ -194,6 +204,7 @@ export class Playground {
     this.sheet = { mesh: built.mesh, surface, name, dispose: built.dispose };
     const placed = this.placeOnSheet(slots);
     if (old) this.slideIn(built.mesh, placed);
+    if (reinvite) this.inviteOnSheet();
     return placed;
   }
 
@@ -220,7 +231,7 @@ export class Playground {
     const st = new Sticker(src, this.maxAniso);
     this.stickers.push(st);
     this.world.scene.add(st.root);
-    this.world.track(st.root);
+    this.world.trackMaterials(st.materials.all);
     this.motion.set(st, blankMotion());
     return st;
   }
@@ -294,8 +305,15 @@ export class Playground {
     });
   }
 
+  /** Lift a corner on the sheet's "Peel Me" sticker, asking for a first peel. */
+  inviteOnSheet() {
+    const onSheet = this.stickers.filter((s) => s.surface === this.sheetName);
+    const st = onSheet.find((s) => s.src.key.startsWith('peel-me:')) ?? onSheet[0];
+    if (st) this.setInvite(st);
+  }
+
   /** One sticker's corner is lifted on the opening screen, asking to be peeled. */
-  setInvite(st: Sticker | null) {
+  private setInvite(st: Sticker | null) {
     this.wake();
     if (this.invite && this.invite !== st) this.motion.get(this.invite)!.hoverGoal = 0;
     this.invite = st;
@@ -354,9 +372,13 @@ export class Playground {
     return this.rc.ray.intersectPlane(this.plane, out);
   }
 
-  /** Phones: tilt the device to catch the light on the holo foil. */
-  private enableGyro() {
-    if (this.gyro || !('DeviceOrientationEvent' in window)) return;
+  /**
+   * Phones: tilt the device to catch the light on the holo foil. iOS only
+   * allows the permission prompt from a user activation (a touch *release*).
+   */
+  private requestGyro() {
+    if (this.gyroRequested || this.reduceMotion || !('DeviceOrientationEvent' in window)) return;
+    this.gyroRequested = true;
     const start = () => {
       this.gyro = { x: 0, y: 0, base: null };
       window.addEventListener('deviceorientation', (e) => {
@@ -366,8 +388,13 @@ export class Playground {
         // Slowly re-centre so however you hold the phone becomes "level".
         g.base.b += (e.beta - g.base.b) * 0.01;
         g.base.g += (e.gamma - g.base.g) * 0.01;
-        g.x = clamp((e.gamma - g.base.g) / 25, -1, 1);
-        g.y = clamp(-(e.beta - g.base.b) / 25, -1, 1);
+        // Quantised, so sensor noise doesn't keep the scene redrawing.
+        const x = Math.round(clamp((e.gamma - g.base.g) / 25, -1, 1) * 100) / 100;
+        const y = Math.round(clamp(-(e.beta - g.base.b) / 25, -1, 1) * 100) / 100;
+        if (x === g.x && y === g.y) return;
+        g.x = x;
+        g.y = y;
+        this.wake();
       });
     };
     const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
@@ -378,21 +405,23 @@ export class Playground {
     } else start();
   }
 
+  /** Events from a second finger mid-gesture are ignored. */
+  private isOtherPointer(e: PointerEvent) {
+    return this.activePointer !== null && e.pointerId !== this.activePointer;
+  }
+
   private onDown = (e: PointerEvent) => {
+    if (this.isOtherPointer(e)) return;
     this.sfx.unlock();
-    if (e.pointerType === 'touch') this.enableGyro();
     this.setNdc(e);
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
     this.lastPointerType = e.pointerType;
     if (this.held) {
-      if (this.clickToDrop && this.held.mode === 'carried') {
-        const st = this.held;
-        this.held = null;
-        this.clickToDrop = false;
-        this.drop(st);
-      }
+      // A freshly made sticker in hand: this click sticks it down.
+      if (this.clickToDrop) this.dropHeld();
       return;
     }
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    this.activePointer = e.pointerId;
     const hit = e.button === 0 ? this.pick() : null;
     if (!hit) {
       this.orbitDrag = { x: e.clientX, y: e.clientY, yaw: this.userOrbit.yaw, pitch: this.userOrbit.pitch };
@@ -419,10 +448,12 @@ export class Playground {
 
     const edge = edgeInfo(st.src, hit.x, hit.y);
     m.r = curlRadius(st);
-    if (st.mode === 'peeling' || edge.dist < edgeZone(st)) {
-      // Grab an edge: start peeling from exactly where you pressed. (Grabbing
-      // a sticker that's still rolling back resumes the same peel.)
-      if (st.mode !== 'peeling') {
+    // Pressing a flap that's still rolling back near where it was held
+    // resumes that peel; anywhere else starts a new one.
+    const resume = st.mode === 'peeling' && Math.hypot(hit.x - m.grab.x, hit.y - m.grab.y) < 1;
+    if (resume || edge.dist < edgeZone(st)) {
+      if (!resume) {
+        st.peel.theta = 0;
         m.grab = { x: hit.x, y: hit.y };
         m.inward = { x: edge.nx, y: edge.ny };
         m.target = { x: hit.x, y: hit.y };
@@ -438,6 +469,7 @@ export class Playground {
   };
 
   private onMove = (e: PointerEvent) => {
+    if (this.isOtherPointer(e)) return;
     this.setNdc(e);
     if (this.orbitDrag) {
       const o = this.orbitDrag;
@@ -449,6 +481,13 @@ export class Playground {
   };
 
   private onUp = (e: PointerEvent) => {
+    if (this.isOtherPointer(e)) return;
+    this.activePointer = null;
+    if (e.pointerType === 'touch') {
+      // On touch screens only the release counts as a user activation.
+      this.sfx.unlock();
+      this.requestGyro();
+    }
     this.setNdc(e);
     if (this.orbitDrag) {
       this.orbitDrag = null;
@@ -483,6 +522,7 @@ export class Playground {
     const key = e.key.toLowerCase();
     if (key === 'q' || key === 'arrowleft') this.motion.get(st)!.yawGoal += step;
     if (key === 'e' || key === 'r' || key === 'arrowright') this.motion.get(st)!.yawGoal -= step;
+    if (key === 'escape') this.dropHeld();
   };
 
   private setCursor(c: string) {
@@ -565,14 +605,15 @@ export class Playground {
    * The highest surface under a sticker's footprint is what it sticks to;
    * whatever hangs off that surface wraps over its edge.
    */
-  footprint(st: Sticker, cx: number, cz: number) {
+  footprint(st: Sticker, cx: number, cz: number, { sheets = true } = {}) {
     const pts = st.src.points;
     let best: Surface | null = null;
     const stride = Math.max(2, Math.floor(pts.length / 2 / 60) * 2);
     for (let i = 0; i < pts.length; i += stride) {
       const w = rotateToWorld(pts[i], pts[i + 1], st.yaw, v2);
       const hit = this.world.surfaceAt(cx + w.x, cz + w.y);
-      if (hit && (!best || hit.top > best.top)) best = hit;
+      if (!hit || (!sheets && hit.name.startsWith(SHEET_PREFIX))) continue;
+      if (!best || hit.top > best.top) best = hit;
     }
     return { top: best?.top ?? 0, surface: best };
   }
@@ -640,8 +681,9 @@ export class Playground {
 
   /** Camera: intro shot, user tilt, and parallax from the pointer or gyro. */
   private updateView(dt: number) {
-    let px = this.hasPointer && !this.orbitDrag ? this.ndc.x : 0;
-    let py = this.hasPointer && !this.orbitDrag ? this.ndc.y : 0;
+    const parallax = this.hasPointer && !this.orbitDrag && !this.reduceMotion;
+    let px = parallax ? this.ndc.x : 0;
+    let py = parallax ? this.ndc.y : 0;
     if (this.gyro) {
       px = this.gyro.x;
       py = this.gyro.y;
@@ -857,6 +899,11 @@ export class Playground {
     return this.sheet?.name ?? '';
   }
 
+  /** On a sheet (this pack's, or one that's sliding away)? */
+  isOnSheet(st: Sticker) {
+    return st.surface.startsWith(SHEET_PREFIX);
+  }
+
   /** Is anything mid-gesture or mid-animation? (If not, the loop may sleep.) */
   busy() {
     if (this.held || this.orbitDrag || this.intro < 1 || this.tweens.length) return true;
@@ -888,7 +935,7 @@ export class Playground {
 
   /** Everything off the sheet flies away, one after another. */
   peelAll() {
-    const off = this.stickers.filter((s) => s.surface !== this.sheetName && s.mode === 'stuck').sort((a, b) => b.layer - a.layer);
+    const off = this.stickers.filter((s) => !this.isOnSheet(s) && s.mode === 'stuck').sort((a, b) => b.layer - a.layer);
     const t0 = performance.now();
     off.forEach((st, i) => {
       const start = t0 + i * 70;
@@ -903,6 +950,7 @@ export class Playground {
           this.liftOff(st, p[k], p[k + 1]);
           away = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
         }
+        if (this.held === st) return false; // caught mid-flight: it's yours now
         const t = (now - start) / 1000;
         this.motion
           .get(st)!
@@ -916,12 +964,25 @@ export class Playground {
     });
   }
 
+  /** Stick down whatever is in hand right now, where it is. */
+  dropHeld() {
+    const st = this.held;
+    if (st?.mode !== 'carried') return;
+    this.held = null;
+    this.clickToDrop = false;
+    this.activePointer = null;
+    this.setCursor('');
+    this.drop(st);
+  }
+
   /**
    * Put a freshly made sticker in your hand: it follows the mouse until you
    * click to stick it down. On touch screens it lands on the notebook.
    */
   give(st: Sticker) {
     this.wake();
+    // Only one sticker in hand at a time.
+    this.dropHeld();
     const carry = this.carryHeight();
     const nb = this.world.notebookSurface;
     const touch = this.lastPointerType === 'touch' || !this.hasPointer;

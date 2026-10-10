@@ -126,6 +126,8 @@ export class PcssMinMax {
   private quad: THREE.Mesh;
   private scene = new THREE.Scene();
   private cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  /** Float render targets available? If not, every pixel takes the full search. */
+  private supported: boolean;
 
   /**
    * `searchTexels` is the PCSS blocker-search radius in shadow-map texels;
@@ -207,8 +209,6 @@ export class PcssMinMax {
       this.uniform.value = t;
     }
   }
-
-  private supported: boolean;
 
   /**
    * `shadowMatrix` maps world -> (u, v, depth); its inverse's second row

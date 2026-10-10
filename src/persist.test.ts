@@ -28,6 +28,23 @@ describe('persist', () => {
     expect(back).toEqual({ v: 1, s: [] });
   });
 
+  it('drops entries a link could use to cause trouble', async () => {
+    const evil = {
+      v: 1,
+      s: [
+        { d: 'mule', f: 'gloss', x: 1, z: 2, a: 0, l: 0.006 },
+        { d: 'mule', f: 'gold', x: 1, z: 2, a: 0, l: 0.006 },
+        { d: '../x:y', f: 'gloss', x: 1, z: 2, a: 0, l: 0.006 },
+        { d: 'mule', f: 'gloss', x: null, z: 2, a: 0, l: 0.006 },
+        { d: 'mule', f: 'gloss', x: 1e9, z: 2, a: 0, l: 0.006 },
+      ],
+      u: { 'u-1': 'https://tracker.example/pixel.png', 'u-2': 'data:image/webp;base64,AAAA' },
+    };
+    const back = await decode('j' + btoa(JSON.stringify(evil)));
+    expect(back?.s).toHaveLength(1);
+    expect(back?.u).toEqual({ 'u-2': 'data:image/webp;base64,AAAA' });
+  });
+
   it('rejects garbage instead of throwing', async () => {
     expect(await decode('')).toBeNull();
     expect(await decode('z!!!not-base64')).toBeNull();

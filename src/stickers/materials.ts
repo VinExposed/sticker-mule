@@ -5,8 +5,6 @@ function texture(c: HTMLCanvasElement, srgb: boolean, maxAniso: number) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   t.anisotropy = maxAniso;
-  t.generateMipmaps = true;
-  t.minFilter = THREE.LinearMipmapLinearFilter;
   return t;
 }
 
@@ -86,6 +84,8 @@ export interface StickerMaterials {
   /** Resting edge band, colour only, drawn after everything opaque. */
   edge: THREE.MeshStandardMaterial;
   back: THREE.MeshStandardMaterial;
+  /** All of the above, for one-off setup that must reach every material. */
+  all: THREE.Material[];
   dispose(): void;
 }
 
@@ -111,6 +111,7 @@ export function acquireMaterials(src: StickerSource, maxAniso: number): StickerM
     edgeDepth: e.mats.edgeDepth,
     edge: e.mats.edge,
     back: e.mats.back,
+    all: e.mats.all,
     dispose() {
       if (released) return;
       released = true;
@@ -136,7 +137,6 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
     // A sticker is a thin sheet: cast from both faces so only this mesh needs
     // to be in the shadow pass (three defaults to back faces only).
     shadowSide: THREE.DoubleSide,
-    ...finishParams(src.finish),
   });
   applyFinish(front, src.finish, foilMap);
   const core = front.clone();
@@ -177,6 +177,7 @@ function stickerMaterials(src: StickerSource, maxAniso: number): StickerMaterial
     edgeDepth,
     edge,
     back,
+    all: [front, core, edgeDepth, edge, back],
     dispose() {
       map.dispose();
       backMap.dispose();

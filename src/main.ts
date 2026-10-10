@@ -22,14 +22,16 @@ async function main() {
   // Handle for scripted browser tests during development.
   if (import.meta.env.DEV) (window as unknown as { __peel: unknown }).__peel = { play, world, THREE };
 
-  const placed = play.newPack(await makePack(lib, 0), 4);
+  play.newPack(await makePack(lib, 0), 4);
 
-  // Restore a shared link, or the last session.
+  // Restore a shared link, or the last session. A link is consumed once:
+  // after that, autosave owns the notebook and a reload shouldn't revert it.
   const fromHash = location.hash.startsWith('#c=') ? location.hash.slice(3) : null;
+  if (fromHash) history.replaceState(null, '', location.pathname + location.search);
   const saved = await decode(fromHash ?? loadLocal() ?? '');
   const restored = saved ? await restore(play, lib, saved) : 0;
   // The opening shot: one corner, begging.
-  if (!restored) play.setInvite(placed[9] ?? placed[0]);
+  if (!restored) play.inviteOnSheet();
 
   let packSeed = 1;
   const ui = mountUi({
@@ -45,12 +47,23 @@ async function main() {
   play.onFirstPeel = () => ui.firstPeel();
   if (restored) ui.firstPeel();
 
-  // Autosave once things settle.
+  // Autosave once things settle. Encoding is async, so number the saves and
+  // let only the newest one write.
   let saveTimer = 0;
+  let saveSeq = 0;
   play.onChange = () => {
     clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(async () => saveLocal(await encode(serialize(play, lib))), 600);
+    saveTimer = window.setTimeout(async () => {
+      const seq = ++saveSeq;
+      const encoded = await encode(serialize(play, lib));
+      if (seq === saveSeq) saveLocal(encoded);
+    }, 600);
   };
+
+  world.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    showFatal('The graphics context was lost. Reload to keep peeling.');
+  });
 
   // Compile every shader up front (in parallel where the driver allows) so
   // the first frames don't hitch.
@@ -76,10 +89,6 @@ async function main() {
     nextWakeIn: () => play.nextWakeIn(),
   });
   document.body.classList.add('ready');
-
-  // Build the audio graph while nothing's happening, not in the first click.
-  const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
-  idle(() => sfx.prepare());
 }
 
 /** Ten characters plus two bonus pulls; pack 0 is in catalogue order. */
@@ -103,9 +112,15 @@ function shuffle<T>(a: T[], seed: number) {
   return a;
 }
 
+function showFatal(message: string, detail = '') {
+  const box = document.createElement('div');
+  box.className = 'fatal';
+  box.textContent = message;
+  if (detail) box.append(document.createElement('br'), Object.assign(document.createElement('small'), { textContent: detail }));
+  document.getElementById('ui')!.replaceChildren(box);
+}
+
 main().catch((e) => {
   console.error(e);
-  const el = document.getElementById('ui')!;
-  el.innerHTML = '<div class="fatal">Couldn’t start WebGL. Try another browser?<br><small></small></div>';
-  el.querySelector('small')!.textContent = String(e?.message ?? e);
+  showFatal('Couldn’t start WebGL. Try another browser?', String(e?.message ?? e));
 });

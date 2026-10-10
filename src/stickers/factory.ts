@@ -83,20 +83,17 @@ function padded(src: CanvasImageSource, w: number, h: number, pad: number): HTML
   return c;
 }
 
-/** Bounding box of the opaque pixels, found on a quarter-size copy. */
-function bbox(src: HTMLCanvasElement) {
-  const k = 4;
-  const c = canvas(Math.ceil(src.width / k), Math.ceil(src.height / k));
-  c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
-  const { width: w, height: h } = c;
-  const d = c.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
+/** Bounding box of the pixels with alpha above `threshold`, or null if none. */
+export function alphaBounds(src: HTMLCanvasElement, threshold = 8) {
+  const { width: w, height: h } = src;
+  const d = src.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
   let x0 = w;
   let y0 = h;
   let x1 = -1;
   let y1 = -1;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (d[(y * w + x) * 4 + 3] > 8) {
+      if (d[(y * w + x) * 4 + 3] > threshold) {
         if (x < x0) x0 = x;
         if (x > x1) x1 = x;
         if (y < y0) y0 = y;
@@ -104,12 +101,21 @@ function bbox(src: HTMLCanvasElement) {
       }
     }
   }
-  if (x1 < 0) return { x: 0, y: 0, w: src.width, h: src.height };
+  return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+/** Bounding box of the opaque pixels, found on a quarter-size copy. */
+function bbox(src: HTMLCanvasElement) {
+  const k = 4;
+  const small = canvas(Math.ceil(src.width / k), Math.ceil(src.height / k));
+  small.getContext('2d', { willReadFrequently: true })!.drawImage(src, 0, 0, small.width, small.height);
+  const b = alphaBounds(small);
+  if (!b) return { x: 0, y: 0, w: src.width, h: src.height };
   // One low-res cell of slack on each side, clamped to the source.
-  const bx = Math.max(0, (x0 - 1) * k);
-  const by = Math.max(0, (y0 - 1) * k);
-  const bx1 = Math.min(src.width, (x1 + 2) * k);
-  const by1 = Math.min(src.height, (y1 + 2) * k);
+  const bx = Math.max(0, (b.x - 1) * k);
+  const by = Math.max(0, (b.y - 1) * k);
+  const bx1 = Math.min(src.width, (b.x + b.w + 1) * k);
+  const by1 = Math.min(src.height, (b.y + b.h + 1) * k);
   return { x: bx, y: by, w: bx1 - bx, h: by1 - by };
 }
 
@@ -289,12 +295,7 @@ export function covers(s: StickerSource, x: number, y: number): boolean {
 export function edgeInfo(s: StickerSource, x: number, y: number) {
   const fx = (x / s.width + 0.5) * s.mw - 0.5;
   const fy = (y / s.height + 0.5) * s.mh - 0.5;
-  const sample = (ix: number, iy: number) => {
-    const cx = Math.min(s.mw - 1, Math.max(0, ix));
-    const cy = Math.min(s.mh - 1, Math.max(0, iy));
-    if (ix < 0 || iy < 0 || ix >= s.mw || iy >= s.mh) return 0;
-    return s.dist[cy * s.mw + cx];
-  };
+  const sample = (ix: number, iy: number) => (ix < 0 || iy < 0 || ix >= s.mw || iy >= s.mh ? 0 : s.dist[iy * s.mw + ix]);
   const ix = Math.round(fx);
   const iy = Math.round(fy);
   // Wide central difference so the gradient is smooth across chamfer steps.
@@ -305,7 +306,7 @@ export function edgeInfo(s: StickerSource, x: number, y: number) {
   gy += 0.5 * (sample(ix + k, iy + k) - sample(ix + k, iy - k) + sample(ix - k, iy + k) - sample(ix - k, iy - k));
   let len = Math.hypot(gx, gy);
   if (len < 1e-6) {
-    // Flat region (deep inside): fall back to "toward the centre of mass".
+    // Flat region (deep inside): fall back to "toward the middle".
     gx = -x;
     gy = -y;
     len = Math.hypot(gx, gy) || 1;

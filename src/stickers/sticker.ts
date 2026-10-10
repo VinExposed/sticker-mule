@@ -14,7 +14,7 @@ export const LAYER = 0.012;
 
 const tmp: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
 const wrapped: Wrapped = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 };
-const held: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
+const scratchPoint: DeformOut = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 1 };
 const offset = { x: 0, y: 0 };
 const m4 = new THREE.Matrix4();
 const m4b = new THREE.Matrix4();
@@ -139,7 +139,7 @@ export class Sticker {
       let gy = this.grab.y;
       let gz = 0;
       if (!flat) {
-        const gd = deform(gx, gy, peel, held);
+        const gd = deform(gx, gy, peel, scratchPoint);
         gx = gd.x;
         gy = gd.y;
         gz = gd.z;
@@ -295,12 +295,19 @@ export class Sticker {
   /** World position of a rest-pose point in the current shape. */
   worldPoint(px: number, py: number, out = new THREE.Vector3()) {
     if (this.isFlat) return out.set(px, 0, py).applyMatrix4(this.root.matrix);
-    const d = deform(px, py, this.peel, held);
+    const d = deform(px, py, this.peel, scratchPoint);
     return out.set(d.x, d.z, d.y).applyMatrix4(this.root.matrix);
   }
 
   dispose() {
-    this.geometry?.dispose();
+    const g = this.geometry;
+    if (g) {
+      // Index and UVs are shared with other stickers' grids: detach them so
+      // dispose() only frees what's ours.
+      g.setIndex(null);
+      g.deleteAttribute('uv');
+      g.dispose();
+    }
     this.materials.dispose();
   }
 }

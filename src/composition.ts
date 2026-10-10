@@ -12,12 +12,12 @@ import type { Finish, StickerSource } from './stickers/factory';
 
 const FINISHES: Finish[] = ['gloss', 'matte', 'holo'];
 
-/** Everything stuck down that isn't still on the sheet, bottom layer first. */
+/** Everything stuck down that isn't on a sheet, bottom layer first. */
 export function serialize(play: Playground, lib: Library): Composition {
   const nb = play.world.notebookSurface;
   const s: SavedSticker[] = [];
   const u: Record<string, string> = {};
-  const list = play.stickers.filter((st) => st.mode === 'stuck' && st.surface !== play.sheetName).sort((a, b) => a.layer - b.layer);
+  const list = play.stickers.filter((st) => st.mode === 'stuck' && !play.isOnSheet(st)).sort((a, b) => a.layer - b.layer);
   for (const st of list) {
     const [design, finish] = st.src.key.split(':');
     const p = rotateToLocal(st.x - nb.x, st.z - nb.z, nb.yaw);
@@ -49,7 +49,8 @@ export async function restore(play: Playground, lib: Library, comp: Composition)
     st.z = nb.z + p.y;
     st.yaw = saved.a + nb.yaw;
     st.layer = saved.l;
-    const { top, surface } = play.footprint(st, st.x, st.z);
+    // Never onto the sheet: it isn't saved, and leaves with the next pack.
+    const { top, surface } = play.footprint(st, st.x, st.z, { sheets: false });
     st.surface = surface?.name ?? 'desk';
     st.support = surface;
     st.baseY = top + st.layer;

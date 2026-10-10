@@ -76,11 +76,16 @@ export class World {
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 0.92;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.domElement.setAttribute('role', 'img');
+    renderer.domElement.setAttribute('aria-label', 'A desk with a notebook and a sheet of stickers you can peel and stick');
     container.appendChild(renderer.domElement);
     this.renderer = renderer;
 
     const pmrem = new THREE.PMREMGenerator(renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const room = new RoomEnvironment();
+    this.scene.environment = pmrem.fromScene(room, 0.04).texture;
+    room.dispose();
+    pmrem.dispose();
     this.scene.environmentIntensity = 0.32;
     this.scene.background = new THREE.Color('#cfc8bc');
 
@@ -366,12 +371,17 @@ export class World {
     if (depth) this.minMax.update(depth, this.key.shadow.matrix);
   }
 
-  /** Let a newly added object's materials use the shadow min/max texture. */
+  /** Let a newly added object's materials use the soft-shadow lookup. */
   track(obj: THREE.Object3D) {
     obj.traverse((o) => {
       const mat = (o as THREE.Mesh).material;
       if (mat) for (const m of Array.isArray(mat) ? mat : [mat]) this.minMax.patch(m);
     });
+  }
+
+  /** Same, for materials that get swapped onto meshes later. */
+  trackMaterials(materials: THREE.Material[]) {
+    for (const m of materials) this.minMax.patch(m);
   }
 
   /** Is there something waiting to be drawn? */

@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "format": "prettier --write .",
-    "check": "tsc --noEmit && prettier --check . && vitest run"
+    "check": "tsc --noEmit && prettier --check . && vitest run",
+    "e2e": "node e2e/smoke.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"
